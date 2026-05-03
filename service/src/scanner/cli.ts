@@ -1,31 +1,36 @@
-// Scanner CLI — milestone 1.
+// Scanner CLI — milestone 2.
 //
 // Usage:
-//   npm run scanner -- run --project rssreader              # scan one project; write findings/
+//   npm run scanner -- run --project rssreader              # scan + Claude triage; write findings/
 //   npm run scanner -- run --project rssreader --dry-run    # print to stdout, no write
+//   npm run scanner -- run --project rssreader --no-triage  # skip Claude (cheap re-run)
 //
 // Future milestones add: run --all (selector), --force, token mgmt.
 
 import "dotenv/config";
 import { resolve } from "node:path";
+import { makeAnthropicClient } from "./claude.js";
 import { resolveProject, scanProject } from "./run.js";
 
 interface CliArgs {
   command: "run";
   project: string | null;
   dryRun: boolean;
+  noTriage: boolean;
 }
 
 function usage(): string {
   return [
-    "usage: scanner run --project <name> [--dry-run]",
+    "usage: scanner run --project <name> [--dry-run] [--no-triage]",
     "",
     "  --project <name>   project directory name under one of PROJECT_ROOTS",
     "  --dry-run          print findings JSON to stdout instead of writing",
+    "  --no-triage        skip the Claude triage layer (faster, untriaged output)",
     "",
     "env:",
     "  PROJECT_ROOTS      comma-separated absolute paths (default: /home/secorp/termag/projects)",
     "  FINDINGS_DIR       output directory (default: <repo>/findings)",
+    "  ANTHROPIC_API_KEY  required unless --no-triage",
   ].join("\n");
 }
 
@@ -35,10 +40,13 @@ function parseArgs(argv: string[]): CliArgs {
   }
   let project: string | null = null;
   let dryRun = false;
+  let noTriage = false;
   for (let i = 1; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--dry-run") {
       dryRun = true;
+    } else if (a === "--no-triage") {
+      noTriage = true;
     } else if (a === "--project") {
       project = argv[++i] ?? null;
     } else if (a?.startsWith("--project=")) {
@@ -48,7 +56,7 @@ function parseArgs(argv: string[]): CliArgs {
     }
   }
   if (!project) throw new Error(`--project is required\n\n${usage()}`);
-  return { command: "run", project, dryRun };
+  return { command: "run", project, dryRun, noTriage };
 }
 
 function getProjectRoots(): string[] {
@@ -80,12 +88,21 @@ async function main(): Promise<void> {
   const { root, projectPath, projectKey } = resolveProject(roots, args.project!);
   logger("info", `scanning ${projectKey} at ${projectPath}`);
 
+  let claudeClient = null;
+  if (!args.noTriage) {
+    if (!process.env.ANTHROPIC_API_KEY) {
+      throw new Error("ANTHROPIC_API_KEY not set; pass --no-triage to skip the triage layer");
+    }
+    claudeClient = makeAnthropicClient();
+  }
+
   const report = await scanProject({
     projectPath,
     root,
     projectKey,
     findingsDir,
     dryRun: args.dryRun,
+    claudeClient,
     log: logger,
   });
 

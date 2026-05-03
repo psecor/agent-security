@@ -10,7 +10,9 @@
     "scanner:built": "node dist/scanner/cli.js"
   },
   "dependencies": {
-    "dotenv": "^16.4.5"
+    "@anthropic-ai/sdk": "^0.71.0",
+    "dotenv": "^16.4.5",
+    "zod": "^4.0.0"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

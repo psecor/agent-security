@@ -4,10 +4,11 @@
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
+import type Anthropic from "@anthropic-ai/sdk";
 import { getHeadSha, isGitRepo } from "./git.js";
 import { SemgrepRunner } from "./tools/semgrep.js";
 import type { ToolRunner, ToolRunRecord, RawFinding, ToolContext } from "./tools/types.js";
-import { naiveTriage } from "./triage.js";
+import { triage } from "./triage.js";
 import {
   countSeverities,
   findingsPath,
@@ -31,6 +32,9 @@ export interface RunOptions {
   findingsDir: string;
   // If true, print the JSON to stdout and skip the file write.
   dryRun: boolean;
+  // Anthropic client for the triage layer. When null, triage falls back to
+  // the milestone-1 naive mapping and the output is marked `triaged: false`.
+  claudeClient: Anthropic | null;
   // Logger.
   log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
 }
@@ -93,7 +97,14 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
         error: toolsFailed.map((t) => `${t.name}: ${t.error}`).join("; ") || undefined };
     }
 
-    const findings = sortFindings(naiveTriage(allRaw));
+    const triageResult = await triage({
+      raws: allRaw,
+      projectPath,
+      projectKey,
+      log,
+      claudeClient: opts.claudeClient,
+    });
+    const findings = sortFindings(triageResult.findings);
 
     const output: ScanOutput = {
       project: projectKey,
@@ -101,7 +112,7 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
       project_path: projectPath,
       scanner_version: SCANNER_VERSION,
       schema_version: SCHEMA_VERSION,
-      triaged: false,
+      triaged: triageResult.triaged,
       last_scanned: new Date().toISOString(),
       last_scanned_sha: sha,
       loc_at_scan: 0, // populated by milestone 3 (LOC selector)

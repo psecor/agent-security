@@ -1,32 +1,57 @@
-// Milestone-1 placeholder triage: naive severity mapping, category=other,
-// title from the tool's message, empty rationale. Stable id derivation is
-// real and stays — milestone 2 swaps the rest with Claude-driven triage
-// but keeps the same id formula so cross-version equality holds.
+// Triage layer. Two modes:
+//
+//   - Claude (default in milestone 2+): a single API call ranks severity,
+//     names the problem, writes a per-codebase rationale, and may collapse or
+//     drop noisy raws. Sets `triaged: true` on the output.
+//   - Naive (milestone 1, retained for --no-triage and as a fallback): straight
+//     pass-through with mechanical severity mapping. Sets `triaged: false`.
+//
+// `deriveId` and the line-context formula are deliberately stable across both
+// modes — Claude doesn't see ids; we compute them from `raw_indexes[0]` so a
+// finding's id is the same whether it came from Claude or the naive fallback.
 
 import { createHash } from "node:crypto";
+import type Anthropic from "@anthropic-ai/sdk";
 import type { RawFinding } from "./tools/types.js";
 import type { Finding, Severity } from "./types.js";
+import { triageWithClaude, type TriageUsage } from "./claude.js";
+import { SourceReader, normalizedLineContext } from "./source.js";
 
-export function naiveMapSeverity(toolSeverity: string, source: string): Severity {
-  const s = toolSeverity.toUpperCase();
-  // Semgrep
-  if (source === "semgrep") {
-    if (s === "ERROR") return "high";
-    if (s === "WARNING") return "medium";
-    if (s === "INFO") return "low";
-    return "info"; // INVENTORY, EXPERIMENT, unknown
-  }
-  // Generic fallback for tools using lower-case english labels.
-  if (s === "CRITICAL") return "critical";
-  if (s === "HIGH") return "high";
-  if (s === "MEDIUM" || s === "MODERATE") return "medium";
-  if (s === "LOW") return "low";
-  return "info";
+export interface TriageInput {
+  raws: RawFinding[];
+  projectPath: string;
+  projectKey: string;
+  log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
+  // When supplied, use Claude. When null, fall back to naive triage.
+  claudeClient: Anthropic | null;
 }
 
-function truncate(s: string, max: number): string {
-  if (s.length <= max) return s;
-  return s.slice(0, max - 1).trimEnd() + "…";
+export interface TriageResult {
+  findings: Finding[];
+  triaged: boolean;
+  usage: TriageUsage | null;
+}
+
+export async function triage(input: TriageInput): Promise<TriageResult> {
+  const reader = new SourceReader(input.projectPath);
+  if (input.raws.length === 0) {
+    return { findings: [], triaged: input.claudeClient !== null, usage: null };
+  }
+  if (input.claudeClient) {
+    const { parsed, usage } = await triageWithClaude({
+      client: input.claudeClient,
+      projectKey: input.projectKey,
+      projectPath: input.projectPath,
+      raws: input.raws,
+      log: input.log,
+    });
+    return {
+      findings: assembleFromClaude(parsed.findings, input.raws, reader, input.log),
+      triaged: true,
+      usage,
+    };
+  }
+  return { findings: naiveTriage(input.raws, reader), triaged: false, usage: null };
 }
 
 export function deriveId(rule_id: string, file: string, lineContext: string): string {
@@ -39,43 +64,98 @@ export function deriveId(rule_id: string, file: string, lineContext: string): st
   return "sha256:" + h.digest("hex");
 }
 
-// Best-effort context extractor for stable IDs. For Semgrep, the `lines`
-// field on the raw record already gives us the matched span; if the runner
-// passed it through we use it. Otherwise we fall back to "file:line" so
-// the id is at least project-stable, just less line-shift resistant.
-export function extractLineContext(raw: RawFinding): string {
-  const r = raw.raw as { extra?: { lines?: string } } | undefined;
-  const lines = r?.extra?.lines;
-  if (typeof lines === "string" && lines.length > 0) {
-    return lines
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => l.length > 0)
-      .join("\n");
+export function naiveMapSeverity(toolSeverity: string, source: string): Severity {
+  const s = toolSeverity.toUpperCase();
+  if (source === "semgrep") {
+    if (s === "ERROR") return "high";
+    if (s === "WARNING") return "medium";
+    if (s === "INFO") return "low";
+    return "info";
   }
-  return `${raw.file}:${raw.line}`;
+  if (s === "CRITICAL") return "critical";
+  if (s === "HIGH") return "high";
+  if (s === "MEDIUM" || s === "MODERATE") return "medium";
+  if (s === "LOW") return "low";
+  return "info";
 }
 
-export function naiveTriage(raw: RawFinding[]): Finding[] {
-  return raw.map((r): Finding => {
-    const severity = naiveMapSeverity(r.severity, r.source);
-    const lineContext = extractLineContext(r);
+function truncate(s: string, max: number): string {
+  if (s.length <= max) return s;
+  return s.slice(0, max - 1).trimEnd() + "…";
+}
+
+export function naiveTriage(raws: RawFinding[], reader: SourceReader): Finding[] {
+  return raws.map((r): Finding => {
+    const lineContext = normalizedLineContext(reader, r.file, r.line);
     const id = deriveId(r.rule_id, r.file, lineContext);
     const title = truncate(r.message.replace(/\s+/g, " ").trim() || r.rule_id, 100);
-
     const finding: Finding = {
       id,
-      severity,
+      severity: naiveMapSeverity(r.severity, r.source),
       category: "other",
       title,
       file: r.file,
       line: r.line,
       source: r.source,
       rule_id: r.rule_id,
-      rationale: "", // milestone 2 fills this in via Claude
+      rationale: "",
     };
     if (r.line_end !== undefined) finding.line_end = r.line_end;
     if (r.links && r.links.length > 0) finding.links = r.links;
     return finding;
   });
+}
+
+interface ClaudeFinding {
+  raw_indexes: number[];
+  severity: Severity;
+  category: string;
+  title: string;
+  rationale: string;
+}
+
+function assembleFromClaude(
+  triaged: ClaudeFinding[],
+  raws: RawFinding[],
+  reader: SourceReader,
+  log: (level: "debug" | "info" | "warn" | "error", msg: string) => void,
+): Finding[] {
+  const findings: Finding[] = [];
+  const seenIndexes = new Set<number>();
+
+  for (const t of triaged) {
+    const validIndexes = t.raw_indexes.filter((i) => Number.isInteger(i) && i >= 0 && i < raws.length);
+    if (validIndexes.length === 0) {
+      log("warn", `claude: dropped triaged finding with no valid raw_indexes: ${t.title}`);
+      continue;
+    }
+    for (const i of validIndexes) seenIndexes.add(i);
+
+    // Canonical raw is the first listed index — its rule_id and file/line
+    // anchor the id and the file:line shown in the report.
+    const canonical = raws[validIndexes[0]!]!;
+    const lineContext = normalizedLineContext(reader, canonical.file, canonical.line);
+    const id = deriveId(canonical.rule_id, canonical.file, lineContext);
+
+    const finding: Finding = {
+      id,
+      severity: t.severity,
+      category: t.category,
+      title: t.title.replace(/\s+/g, " ").trim(),
+      file: canonical.file,
+      line: canonical.line,
+      source: canonical.source,
+      rule_id: canonical.rule_id,
+      rationale: t.rationale.trim(),
+    };
+    if (canonical.line_end !== undefined) finding.line_end = canonical.line_end;
+    if (canonical.links && canonical.links.length > 0) finding.links = canonical.links;
+    findings.push(finding);
+  }
+
+  const dropped = raws.length - seenIndexes.size;
+  if (dropped > 0) {
+    log("info", `claude: dropped ${dropped} raw finding(s) as false positives or noise`);
+  }
+  return findings;
 }
