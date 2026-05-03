@@ -1,7 +1,7 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Milestones 1–3 done: scanner skeleton, Claude triage layer, and LOC-threshold selector with multi-root + --all + bot-commit-on-write. Express server, UI, and deploy not yet built."
+status_description: "Milestones 1–4 done: scanner skeleton, Claude triage layer, LOC-threshold selector with multi-root + --all + bot-commit-on-write, and the Express server (OAuth + bearer-token JSON API on port 3046). UI and deploy not yet built."
 last_updated: 2026-05-03
 last_updated_by:
   - agent:claude-opus-4-7
@@ -18,7 +18,7 @@ A periodic, work-amount, or on-demand security analyst for the workspace. Walks 
 
 ## Status
 
-**In progress.** Milestones 1–3 of the build order are landed: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, and the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write. The scanner is now self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. Spec docs (`spec/findings-schema.md`, `spec/tools.md`) are written. No Express server, no UI, no deploy yet.
+**In progress.** Milestones 1–4 of the build order are landed: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, and the Express server with Google OAuth (humans) + bearer-token (machines) auth and the JSON API. The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand and serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`; `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. No UI, no deploy yet.
 
 Decided:
 
@@ -35,7 +35,7 @@ Build order:
 1. ✅ Spec (`spec/findings-schema.md`, `spec/tools.md`) + scanner skeleton (`ToolRunner` interface, Semgrep runner, single-project CLI writing `findings/<project>.json`).
 2. ✅ Claude triage layer (prompt, API wrapper, `findings/<project>.md` writer).
 3. ✅ Selector (LOC threshold) + multi-root + `--all` + bot-commit-on-write.
-4. Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
+4. ✅ Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
 5. React + Vite UI at `/security/`.
 6. Deploy: systemd web unit + scanner unit + timer + Apache splice.
 7. Future: dismissals, PR suggestions, Stop-hook trigger, AGENTS.md summary block.
