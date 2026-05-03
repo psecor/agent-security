@@ -32,6 +32,15 @@ export function isGitRepo(projectPath: string): boolean {
   return r.code === 0;
 }
 
+// True when the repo has at least one commit reachable from HEAD. Unborn
+// repos (`git init`'d but no commits yet) return false and are skipped by
+// discovery — every per-scan path needs a HEAD sha (selector diff base,
+// commit message tag, source slice resolution).
+export function hasHead(projectPath: string): boolean {
+  const r = git(["rev-parse", "--verify", "--quiet", "HEAD"], projectPath);
+  return r.code === 0;
+}
+
 // Total tracked LOC in a project's working tree. Approximation: counts
 // newlines across every file `git ls-files` reports. Binary files contribute
 // their incidental newline count, which is a rounding error at the project

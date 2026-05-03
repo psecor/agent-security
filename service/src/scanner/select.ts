@@ -13,7 +13,7 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, join } from "node:path";
 import { findingsPath } from "./apply.js";
-import { getLocChangedSince, isGitRepo } from "./git.js";
+import { getLocChangedSince, hasHead, isGitRepo } from "./git.js";
 
 export interface DiscoveredProject {
   root: string;
@@ -84,8 +84,25 @@ export function discoverProjects(roots: string[]): DiscoveredProject[] {
 
 export function selectProjects(opts: SelectOptions): SelectedProject[] {
   const { roots, findingsDir, locThreshold, force, log } = opts;
-  const all = discoverProjects(roots);
-  log("debug", `discovered ${all.length} project(s) across ${roots.length} root(s)`);
+  const discovered = discoverProjects(roots);
+  log("debug", `discovered ${discovered.length} project(s) across ${roots.length} root(s)`);
+
+  // Skip unborn repos (`git init` with no commits yet). Every per-scan path
+  // needs a HEAD sha, and these projects are uninteresting until they have
+  // any code to scan.
+  const all: DiscoveredProject[] = [];
+  let unborn = 0;
+  for (const p of discovered) {
+    if (!hasHead(p.projectPath)) {
+      log("debug", `skip ${p.projectKey}: no commits yet (unborn repo)`);
+      unborn++;
+      continue;
+    }
+    all.push(p);
+  }
+  if (unborn > 0) {
+    log("info", `skipped ${unborn} unborn repo(s) with no commits`);
+  }
 
   const out: SelectedProject[] = [];
   for (const p of all) {

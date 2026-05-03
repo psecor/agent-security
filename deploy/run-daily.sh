@@ -28,6 +28,12 @@ LOG="${STATE_DIR}/last-run.log"
 
 mkdir -p "${STATE_DIR}"
 
+# Ensure pipx-installed tools (notably semgrep at ~/.local/bin/semgrep) are
+# resolvable. Systemd user services don't source ~/.bashrc / ~/.profile, so
+# PATH defaults to a minimal /usr/local/bin:/usr/bin:/bin and won't find
+# anything under ~/.local/bin without this.
+export PATH="${HOME}/.local/bin:${PATH}"
+
 # Load .env so ANTHROPIC_API_KEY, PROJECT_ROOTS, LOC_THRESHOLD, etc. are
 # available. The CLI also calls `dotenv/config`, so this is belt-and-suspenders
 # for any subprocesses launched outside Node.
