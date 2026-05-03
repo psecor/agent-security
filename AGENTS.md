@@ -1,11 +1,12 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Planning complete; nothing built yet. Standalone repo modeled on agent-wiki: Semgrep + Claude triage, daily + LOC-threshold sweeps, central findings/, /security UI on port 3046 with OAuth + bearer-token API."
-last_updated: 2026-05-02
+status_description: "Milestones 1–3 done: scanner skeleton, Claude triage layer, and LOC-threshold selector with multi-root + --all + bot-commit-on-write. Express server, UI, and deploy not yet built."
+last_updated: 2026-05-03
 last_updated_by:
   - agent:claude-opus-4-7
   - human:secorp
+  - agent:sweeper-claude-opus-4-7
 wiki_schema_version: 1
 ---
 
@@ -17,7 +18,7 @@ A periodic, work-amount, or on-demand security analyst for the workspace. Walks 
 
 ## Status
 
-**Planning. No code yet.** The repo currently contains only this `AGENTS.md` and a `CLAUDE.md` stub.
+**In progress.** Milestones 1–3 of the build order are landed: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, and the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write. The scanner is now self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. Spec docs (`spec/findings-schema.md`, `spec/tools.md`) are written. No Express server, no UI, no deploy yet.
 
 Decided:
 
@@ -31,9 +32,9 @@ Decided:
 
 Build order:
 
-1. Spec (`spec/findings-schema.md`, `spec/tools.md`) + scanner skeleton (`ToolRunner` interface, Semgrep runner, single-project CLI writing `findings/<project>.json`).
-2. Claude triage layer (prompt, API wrapper, `findings/<project>.md` writer).
-3. Selector (LOC threshold) + multi-root + `--all`.
+1. ✅ Spec (`spec/findings-schema.md`, `spec/tools.md`) + scanner skeleton (`ToolRunner` interface, Semgrep runner, single-project CLI writing `findings/<project>.json`).
+2. ✅ Claude triage layer (prompt, API wrapper, `findings/<project>.md` writer).
+3. ✅ Selector (LOC threshold) + multi-root + `--all` + bot-commit-on-write.
 4. Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
 5. React + Vite UI at `/security/`.
 6. Deploy: systemd web unit + scanner unit + timer + Apache splice.
@@ -58,27 +59,29 @@ agent-security/
 │   ├── .env.example
 │   └── src/
 │       ├── scanner/
-│       │   ├── cli.ts         run | run --all | run --project | --dry-run | --force
-│       │   ├── select.ts      LOC-threshold + force/all logic
+│       │   ├── cli.ts         run | run --project | --dry-run | --force (--all TBD)
 │       │   ├── run.ts         orchestrates one project's scan
 │       │   ├── tools/
 │       │   │   ├── types.ts   ToolRunner interface + RawFinding shape
 │       │   │   ├── semgrep.ts bundled default
-│       │   │   └── registry.ts loads user-configured extras from config
+│       │   │   └── registry.ts loads user-configured extras (TBD)
 │       │   ├── prompt.ts      security-analyst prompt + tool-output assembly
-│       │   ├── claude.ts      Claude API wrapper
+│       │   ├── claude.ts      Anthropic API wrapper
+│       │   ├── triage.ts      runs Claude over RawFindings → Finding[]
+│       │   ├── source.ts      reads source slices around finding lines for the prompt
 │       │   ├── apply.ts       writes findings/<project>.{json,md} + commits
 │       │   ├── git.ts         per-project diff stats, sha, commit-on-write
+│       │   ├── select.ts      LOC-threshold + force/all logic (TBD)
 │       │   └── types.ts
-│       └── server/
+│       └── server/            (TBD — none of this exists yet)
 │           ├── index.ts       Express entry; mounts /security on :3046
 │           ├── config.ts
 │           ├── auth.ts        Passport OAuth (humans) + bearer middleware (machines)
 │           ├── tokens.ts      mint / verify; hashed at rest
 │           ├── api.ts         JSON endpoints under /security/api
 │           └── data.ts        reads findings/*.json
-├── ui/                        React + Vite SPA, served by backend at /security/
-└── deploy/
+├── ui/                        React + Vite SPA, served by backend at /security/ (TBD)
+└── deploy/                    (TBD)
     ├── agent-security.service           systemd unit for the web service
     ├── agent-security-scanner.service   user-mode oneshot invoked by timer
     ├── agent-security-scanner.timer     daily 03:30 fan-out
@@ -86,6 +89,8 @@ agent-security/
     ├── apache.conf                      ProxyPass /security → 127.0.0.1:3046
     └── setup.md                         install walkthrough
 ```
+
+Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` owns the Claude pass over `RawFinding[]`; `source.ts` reads the source-window slices that get embedded in the prompt. `prompt.ts` assembles, `claude.ts` is just the API wrapper.
 
 ## Architecture
 
@@ -185,29 +190,29 @@ API tokens for machine clients live in `service/api-tokens.json` (gitignored), p
 
 ## Build, Run, Deploy
 
-**Local dev (TBD):**
+**Local dev:**
 
 ```bash
 # backend
 cd service
 npm install
-npm run scanner -- run --project rssreader --dry-run   # one project, no commit
-npm run server                                          # tsx → :3046
+npm run scanner -- run --project rssreader --dry-run   # one project, no commit (works today)
+npm run server                                          # tsx → :3046 (TBD — server not built)
 
-# UI dev with HMR
+# UI dev with HMR (TBD)
 cd ui
 npm install
 npm run dev                                             # vite → :5173, proxies /security/{api,auth} → :3046
 ```
 
-**Scanner CLI (planned):**
+**Scanner CLI:**
 
 ```bash
-npm run scanner -- run --project rssreader              # scan one project, write+commit
-npm run scanner -- run --all                            # selector decides which projects qualify
-npm run scanner -- run --all --force                    # ignore LOC threshold, scan everything
-npm run scanner -- run --project foo --dry-run          # show diff without writing or committing
-npm run cli -- token create --name jira                 # mint a bearer token for a machine client
+npm run scanner -- run --project rssreader              # scan one project, write+commit (works)
+npm run scanner -- run --project foo --dry-run          # show diff without writing or committing (works)
+npm run scanner -- run --project foo --force            # ignore selector (works; selector is the no-op default today)
+npm run scanner -- run --all                            # selector decides which projects qualify (TBD)
+npm run cli -- token create --name jira                 # mint a bearer token for a machine client (TBD)
 ```
 
 **Production deploy** (TBD): mirrors agent-wiki — `deploy/agent-security.service` runs the web process on `127.0.0.1:3046`; Apache splice in `deploy/apache.conf` proxies `/security`. Daily fan-out via `agent-security-scanner.timer` at 03:30. Walkthrough will land in `deploy/setup.md`.

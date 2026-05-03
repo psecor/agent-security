@@ -5,7 +5,14 @@ import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join, sep } from "node:path";
 import type Anthropic from "@anthropic-ai/sdk";
-import { getHeadSha, isGitRepo } from "./git.js";
+import {
+  commitFindingsFiles,
+  getHeadSha,
+  getLocChangedSince,
+  getTotalLoc,
+  isGitRepo,
+  isInsideWorkTree,
+} from "./git.js";
 import { SemgrepRunner } from "./tools/semgrep.js";
 import type { ToolRunner, ToolRunRecord, RawFinding, ToolContext } from "./tools/types.js";
 import { triage } from "./triage.js";
@@ -16,7 +23,8 @@ import {
   writeJson,
   writeMarkdown,
 } from "./apply.js";
-import type { ScanOutput } from "./types.js";
+import type { ScanOutput, Severity } from "./types.js";
+import { SEVERITY_ORDER } from "./types.js";
 
 const SCANNER_VERSION = "0.1.0";
 const SCHEMA_VERSION = 1;
@@ -35,6 +43,11 @@ export interface RunOptions {
   // Anthropic client for the triage layer. When null, triage falls back to
   // the milestone-1 naive mapping and the output is marked `triaged: false`.
   claudeClient: Anthropic | null;
+  // Skip the bot-commit step after writing findings. Implied by dryRun.
+  noCommit: boolean;
+  // Optional: prior scan's HEAD sha, used to populate
+  // loc_changed_since_previous. The selector usually has this already.
+  priorSha?: string | null;
   // Logger.
   log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
 }
@@ -46,6 +59,7 @@ export interface RunReport {
   toolsRun: number;
   toolsFailed: number;
   outputPaths?: { json: string; md: string };
+  commitSha?: string;       // set when bot-commit produced a new commit
   error?: string;
 }
 
@@ -106,6 +120,10 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
     });
     const findings = sortFindings(triageResult.findings);
 
+    const counts = countSeverities(findings);
+    const locAtScan = getTotalLoc(projectPath);
+    const locChanged = opts.priorSha ? getLocChangedSince(projectPath, opts.priorSha) : null;
+
     const output: ScanOutput = {
       project: projectKey,
       root: opts.root,
@@ -115,11 +133,11 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
       triaged: triageResult.triaged,
       last_scanned: new Date().toISOString(),
       last_scanned_sha: sha,
-      loc_at_scan: 0, // populated by milestone 3 (LOC selector)
-      loc_changed_since_previous: null,
+      loc_at_scan: locAtScan,
+      loc_changed_since_previous: locChanged,
       tools_run: toolsRun,
       tools_failed: toolsFailed,
-      counts: countSeverities(findings),
+      counts,
       findings,
     };
 
@@ -138,11 +156,60 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
     log("info", `wrote ${jsonPath}`);
     log("info", `wrote ${mdPath}`);
 
-    return { projectKey, status: "ok", findingsCount: findings.length,
+    let commitSha: string | undefined;
+    if (!opts.noCommit) {
+      commitSha = maybeCommit({
+        findingsDir: opts.findingsDir,
+        files: [jsonPath, mdPath],
+        projectKey,
+        sha,
+        counts,
+        triaged: triageResult.triaged,
+        log,
+      });
+    }
+
+    const report: RunReport = { projectKey, status: "ok", findingsCount: findings.length,
       toolsRun: toolsRun.length, toolsFailed: toolsFailed.length,
       outputPaths: { json: jsonPath, md: mdPath } };
+    if (commitSha) report.commitSha = commitSha;
+    return report;
   } finally {
     rmSync(scratchRoot, { recursive: true, force: true });
+  }
+}
+
+function maybeCommit(opts: {
+  findingsDir: string;
+  files: string[];
+  projectKey: string;
+  sha: string;
+  counts: Record<Severity, number>;
+  triaged: boolean;
+  log: RunOptions["log"];
+}): string | undefined {
+  const { findingsDir, files, projectKey, sha, counts, triaged, log } = opts;
+  if (!isInsideWorkTree(findingsDir)) {
+    log("warn", `findings dir is not inside a git work tree; skipping bot commit`);
+    return undefined;
+  }
+  const totals = SEVERITY_ORDER
+    .filter((s) => counts[s] > 0)
+    .map((s) => `${counts[s]} ${s}`)
+    .join(", ") || "0 findings";
+  const triageTag = triaged ? "triaged" : "untriaged";
+  const message = `scan(${projectKey}): ${totals} @ ${sha} [${triageTag}]`;
+  try {
+    const result = commitFindingsFiles({ repoCwd: findingsDir, files, message });
+    if (result.committed) {
+      log("info", `committed ${result.sha}: ${message}`);
+      return result.sha;
+    }
+    log("info", `no findings change; skipping commit`);
+    return undefined;
+  } catch (err) {
+    log("warn", `bot commit failed: ${err instanceof Error ? err.message : String(err)}`);
+    return undefined;
   }
 }
 
