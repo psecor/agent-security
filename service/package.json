@@ -1,0 +1,20 @@
+{
+  "name": "agent-security-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "agent-security backend: scanner + (later) HTTP API + UI host.",
+  "scripts": {
+    "build": "tsc",
+    "scanner": "tsx src/scanner/cli.ts",
+    "scanner:built": "node dist/scanner/cli.js"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.5"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.0"
+  }
+}

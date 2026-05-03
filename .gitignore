@@ -1,0 +1,12 @@
+node_modules/
+dist/
+.env
+.env.local
+service/.env
+service/.sessions/
+service/api-tokens.json
+service/agent-security.config.yml
+.claude/
+*.log
+*.tsbuildinfo
+.DS_Store
