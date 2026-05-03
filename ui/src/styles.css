@@ -1,0 +1,259 @@
+:root {
+  --fg: #1f2328;
+  --muted: #57606a;
+  --bg: #ffffff;
+  --bg-alt: #f6f8fa;
+  --border: #d0d7de;
+  --accent: #0969da;
+  --accent-bg: #ddf4ff;
+  --error: #cf222e;
+
+  /* Severity palette — descending intensity. Critical/high are warning-loud;
+     low/info recede so the eye lands on the dangerous rows first. */
+  --sev-critical: #82071e;
+  --sev-high:     #cf222e;
+  --sev-medium:   #bf8700;
+  --sev-low:      #0969da;
+  --sev-info:     #6e7781;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root { height: 100%; }
+
+body {
+  margin: 0;
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+  color: var(--fg);
+  background: var(--bg);
+}
+
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+
+code {
+  font: 12px/1.5 "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace;
+  background: var(--bg-alt);
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+
+.app { display: flex; flex-direction: column; min-height: 100%; }
+
+.topbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.brand { font-weight: 600; font-size: 16px; color: var(--fg); }
+.brand:hover { text-decoration: none; }
+
+.navlinks { display: flex; gap: 16px; flex: 1; margin-left: 8px; }
+
+.user {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--muted);
+}
+
+.linkbtn {
+  background: none;
+  border: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font: inherit;
+}
+.linkbtn:hover { text-decoration: underline; }
+
+.content {
+  max-width: 1100px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+}
+
+.loading, .error, .empty { padding: 40px; text-align: center; color: var(--muted); }
+.error { color: var(--error); }
+.error-inline { color: var(--error); }
+.muted { color: var(--muted); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+/* Severity chips — used both as static labels and as toggle buttons on /findings.
+   The base .chip is muted; .chip-<sev> swaps in the saturated background. */
+.chip {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  color: #fff;
+  background: var(--muted);
+  text-transform: lowercase;
+  border: none;
+  cursor: default;
+  font-family: inherit;
+}
+button.chip { cursor: pointer; }
+.chip-critical { background: var(--sev-critical); }
+.chip-high     { background: var(--sev-high); }
+.chip-medium   { background: var(--sev-medium); }
+.chip-low      { background: var(--sev-low); }
+.chip-info     { background: var(--sev-info); }
+.chip-inactive { opacity: 0.35; }
+.chip-row { display: inline-flex; gap: 4px; flex-wrap: wrap; }
+
+.tag-untriaged {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--bg-alt);
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: lowercase;
+}
+
+/* Home — projects table */
+.projects-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.projects-table th, .projects-table td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: middle;
+}
+.projects-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 2px solid var(--border);
+}
+.project-link { font-weight: 600; }
+
+/* Project detail */
+.back-link { font-size: 13px; }
+.doc-head h1 { margin: 8px 0 6px; font-size: 22px; }
+.doc-meta { display: flex; gap: 12px; align-items: center; margin-bottom: 6px; }
+
+.sev-group { margin-top: 28px; }
+.sev-group h2 {
+  font-size: 14px;
+  margin: 0 0 12px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.sev-count { font-weight: 400; color: var(--muted); }
+
+.findings-list { list-style: none; padding: 0; margin: 0; }
+.finding {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 12px 16px;
+  margin-bottom: 12px;
+  background: var(--bg);
+}
+.finding h3 { margin: 0 0 6px; font-size: 15px; }
+.finding-meta {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  flex-wrap: wrap;
+  margin-bottom: 8px;
+  font-size: 12px;
+}
+.finding-meta .rule { color: var(--muted); }
+.cat {
+  display: inline-block;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+}
+.rationale { margin: 8px 0 0; color: var(--fg); }
+.ref-list { margin: 8px 0 0 16px; padding: 0; font-size: 12px; }
+.ref-list li { margin: 2px 0; }
+
+/* Findings page filters */
+.filters {
+  display: flex;
+  gap: 24px;
+  align-items: center;
+  flex-wrap: wrap;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.filter-group { display: flex; gap: 6px; align-items: center; }
+.filter-label { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em; }
+.filter-group input {
+  padding: 4px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 13px;
+  font-family: inherit;
+}
+
+.findings-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.findings-table th, .findings-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+.findings-table th {
+  font-size: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+  border-bottom: 2px solid var(--border);
+}
+
+/* Login */
+.login {
+  max-width: 420px;
+  margin: 80px auto;
+  text-align: center;
+  padding: 24px;
+}
+.login h1 { margin: 0 0 12px; font-size: 24px; }
+.btn {
+  display: inline-block;
+  padding: 8px 16px;
+  background: var(--accent);
+  color: #fff;
+  border-radius: 6px;
+  font-weight: 600;
+}
+.btn:hover { text-decoration: none; opacity: 0.92; }
+.login .muted { font-size: 12px; margin-top: 16px; }
+
+@media (max-width: 600px) {
+  .topbar { flex-wrap: wrap; gap: 10px 12px; padding: 10px 14px; }
+  .navlinks { flex-basis: 100%; order: 99; }
+  .content { padding: 16px 14px 40px; }
+  .projects-table th:nth-child(3), .projects-table td:nth-child(3),
+  .projects-table th:nth-child(5), .projects-table td:nth-child(5) {
+    display: none;
+  }
+}
