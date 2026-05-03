@@ -1,20 +1,27 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { api, SEVERITIES, type Finding, type ScanOutput } from "../api.ts";
+import { api, SEVERITIES, type Finding, type HistoryEntry, type ScanOutput } from "../api.ts";
 import { SeverityChip, SeverityCounts } from "../components/SeverityChip.tsx";
 
 export function Project(): JSX.Element {
   const { name } = useParams();
   const [data, setData] = useState<ScanOutput | null>(null);
+  const [history, setHistory] = useState<HistoryEntry[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!name) return;
     setData(null);
+    setHistory(null);
     setError(null);
+    setHistoryError(null);
     api.project(name)
       .then(setData)
       .catch((e: Error) => setError(e.message));
+    api.history(name)
+      .then((r) => setHistory(r.history))
+      .catch((e: Error) => setHistoryError(e.message));
   }, [name]);
 
   if (error) return <div className="error">Failed to load: {error}</div>;
@@ -72,7 +79,65 @@ export function Project(): JSX.Element {
           </section>
         ))
       )}
+
+      <ScanHistory entries={history} error={historyError} currentSha={data.last_scanned_sha} />
     </div>
+  );
+}
+
+function ScanHistory({
+  entries,
+  error,
+  currentSha,
+}: {
+  entries: HistoryEntry[] | null;
+  error: string | null;
+  currentSha: string;
+}): JSX.Element | null {
+  if (error) {
+    return (
+      <section className="scan-history">
+        <h2>Scan history</h2>
+        <p className="error-inline">Failed to load history: {error}</p>
+      </section>
+    );
+  }
+  if (!entries) return null;
+  // Hide entirely when there's only the current scan and no prior history
+  // worth surfacing — the page header already shows last_scanned + sha.
+  if (entries.length <= 1) return null;
+  return (
+    <section className="scan-history">
+      <h2>Scan history <span className="muted">({entries.length})</span></h2>
+      <ul className="history-list">
+        {entries.map((e) => (
+          <HistoryRow key={e.commit} entry={e} currentSha={currentSha} />
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+function HistoryRow({ entry, currentSha }: { entry: HistoryEntry; currentSha: string }): JSX.Element {
+  const isCurrent = entry.project_sha === currentSha;
+  const date = new Date(entry.date);
+  return (
+    <li className={`history-row${isCurrent ? " history-current" : ""}`}>
+      <time dateTime={entry.date} title={date.toLocaleString()}>
+        {date.toISOString().slice(0, 10)}
+      </time>
+      <code className="history-commit" title={entry.commit}>{entry.commit.slice(0, 7)}</code>
+      {entry.project_sha ? (
+        <>
+          <span className="history-summary">{entry.summary}</span>
+          <span className="muted">@ <code>{entry.project_sha}</code></span>
+          {entry.triaged === false && <span className="tag-untriaged">untriaged</span>}
+          {isCurrent && <span className="muted">· current</span>}
+        </>
+      ) : (
+        <span className="history-raw">{entry.raw_subject}</span>
+      )}
+    </li>
   );
 }
 

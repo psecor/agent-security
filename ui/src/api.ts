@@ -79,6 +79,19 @@ export interface FindingsRollup {
   count: number;
 }
 
+export interface HistoryEntry {
+  commit: string;
+  date: string;
+  project_sha: string | null;
+  summary: string | null;
+  triaged: boolean | null;
+  raw_subject: string;
+}
+
+export interface HistoryResponse {
+  history: HistoryEntry[];
+}
+
 export interface FindingsQuery {
   severity?: Severity[];
   category?: string[];
@@ -114,6 +127,10 @@ export const api = {
   projects: () => getJson<ProjectsList>(`${API}/projects`),
   project: (urlName: string) =>
     getJson<ScanOutput>(`${API}/projects/${encodeURIComponent(urlName)}`),
+  history: (urlName: string, limit = 50) =>
+    getJson<HistoryResponse>(
+      `${API}/projects/${encodeURIComponent(urlName)}/history?limit=${limit}`,
+    ),
   findings: (q: FindingsQuery = {}) => {
     const params = new URLSearchParams();
     if (q.severity?.length) params.set("severity", q.severity.join(","));

@@ -5,6 +5,7 @@
 // scanner/apply.ts → findingsPath). The URL :name param is the on-disk form
 // (with "__"); the JSON shows the canonical projectKey.
 
+import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
 import type { Finding, ScanOutput, Severity } from "../scanner/types.js";
@@ -43,10 +44,29 @@ export interface FindingsFilter {
   limit?: number;           // default 500
 }
 
+// One row in the per-project scan timeline. Sourced from `git log` in the
+// findings repo, parsed from the bot commit subjects we already write
+// (see scanner/run.ts → maybeCommit). Pre-scanner commits (milestone work,
+// manual edits) appear with summary/project_sha/triaged = null so the UI can
+// still render them as plain history entries instead of dropping them.
+export interface HistoryEntry {
+  commit: string;
+  date: string;
+  project_sha: string | null;
+  summary: string | null;
+  triaged: boolean | null;
+  raw_subject: string;
+}
+
+export interface HistoryResponse {
+  history: HistoryEntry[];
+}
+
 export interface DataLayer {
   projects(): Promise<ProjectsList>;
   project(urlName: string): Promise<ScanOutput | null>;
   findings(filter: FindingsFilter): Promise<FindingsRollup>;
+  history(urlName: string, limit: number): Promise<HistoryResponse | null>;
 }
 
 export interface DataLayerOptions {
@@ -114,6 +134,52 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       }
     },
 
+    async history(urlName: string, limit: number): Promise<HistoryResponse | null> {
+      if (urlName.includes("/") || urlName.includes("..") || urlName.includes("\\")) {
+        return null;
+      }
+      // Only return history for projects that actually have a findings file —
+      // otherwise an attacker could probe `git log` with arbitrary basenames.
+      const jsonPath = join(opts.findingsDir, `${urlName}.json`);
+      try {
+        await fs.stat(jsonPath);
+      } catch {
+        return null;
+      }
+      const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 200);
+      // Track both .json and .md so milestone-1 commits (which only touched
+      // .json) still show, and any future md-only edit would too.
+      const args = [
+        "log",
+        `--max-count=${safeLimit}`,
+        "--no-show-signature",
+        "--format=%H%x09%cI%x09%s",
+        "--",
+        `${urlName}.json`,
+        `${urlName}.md`,
+      ];
+      let stdout: string;
+      try {
+        stdout = await runGit(args, opts.findingsDir);
+      } catch {
+        // Findings dir might not be a git repo (rare; e.g. FINDINGS_DIR
+        // pointed outside the project repo). Treat as "no history".
+        return { history: [] };
+      }
+      const history: HistoryEntry[] = [];
+      for (const line of stdout.split("\n")) {
+        if (!line) continue;
+        const tab1 = line.indexOf("\t");
+        const tab2 = tab1 < 0 ? -1 : line.indexOf("\t", tab1 + 1);
+        if (tab1 < 0 || tab2 < 0) continue;
+        const commit = line.slice(0, tab1);
+        const date = line.slice(tab1 + 1, tab2);
+        const subject = line.slice(tab2 + 1);
+        history.push({ commit, date, ...parseScanSubject(subject), raw_subject: subject });
+      }
+      return { history };
+    },
+
     async findings(filter: FindingsFilter): Promise<FindingsRollup> {
       const all = await loadAll();
       const limit = filter.limit ?? DEFAULT_FINDINGS_LIMIT;
@@ -142,6 +208,35 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       };
     },
   };
+}
+
+// Matches the subject we write in scanner/run.ts → maybeCommit:
+//   scan(<key>): <summary> @ <project-sha> [triaged|untriaged]
+const SCAN_SUBJECT_RE = /^scan\([^)]+\): (.+) @ ([a-f0-9]+) \[(triaged|untriaged)\]$/;
+
+function parseScanSubject(subject: string): {
+  project_sha: string | null;
+  summary: string | null;
+  triaged: boolean | null;
+} {
+  const m = SCAN_SUBJECT_RE.exec(subject);
+  if (!m) return { project_sha: null, summary: null, triaged: null };
+  return { summary: m[1] ?? null, project_sha: m[2] ?? null, triaged: m[3] === "triaged" };
+}
+
+function runGit(args: string[], cwd: string): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    child.stdout.on("data", (b: Buffer) => out.push(b));
+    child.stderr.on("data", (b: Buffer) => err.push(b));
+    child.on("error", reject);
+    child.on("close", (code) => {
+      if (code === 0) resolve(Buffer.concat(out).toString("utf8"));
+      else reject(new Error(`git ${args[0]} exited ${code}: ${Buffer.concat(err).toString("utf8").trim()}`));
+    });
+  });
 }
 
 const SEVERITY_RANK: Record<Severity, number> = {

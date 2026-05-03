@@ -43,6 +43,21 @@ export function apiRoutes(deps: { data: DataLayer; tokens: TokenStore }): expres
     }
   });
 
+  r.get("/api/projects/:name/history", async (req, res, next) => {
+    try {
+      const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : NaN;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 50;
+      const result = await deps.data.history(req.params.name, limit);
+      if (!result) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.get("/api/findings", async (req, res, next) => {
     try {
       const severity = parseList(req.query.severity).filter((s): s is Severity =>

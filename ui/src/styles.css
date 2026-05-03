@@ -190,6 +190,34 @@ button.chip { cursor: pointer; }
 .ref-list { margin: 8px 0 0 16px; padding: 0; font-size: 12px; }
 .ref-list li { margin: 2px 0; }
 
+/* Per-project scan history timeline */
+.scan-history { margin-top: 36px; padding-top: 20px; border-top: 1px solid var(--border); }
+.scan-history h2 {
+  font-size: 14px;
+  margin: 0 0 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--muted);
+}
+.history-list { list-style: none; padding: 0; margin: 0; }
+.history-row {
+  display: flex;
+  gap: 10px;
+  align-items: baseline;
+  padding: 4px 0;
+  font-size: 13px;
+  border-bottom: 1px solid var(--bg-alt);
+}
+.history-row time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 92px;
+}
+.history-commit { flex: 0 0 auto; }
+.history-summary { font-weight: 500; }
+.history-raw { color: var(--muted); font-style: italic; }
+.history-current { background: var(--accent-bg); margin: 0 -8px; padding-left: 8px; padding-right: 8px; border-radius: 4px; }
+
 /* Findings page filters */
 .filters {
   display: flex;
