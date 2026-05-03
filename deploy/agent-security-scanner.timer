@@ -1,0 +1,16 @@
+[Unit]
+Description=Daily agent-security scan fan-out
+Requires=agent-security-scanner.service
+
+[Timer]
+# Daily at 03:30 local — offset 30 min from agent-wiki's 03:00 sweep so the
+# two don't fight for CPU or the Anthropic rate limit on the same host.
+# Persistent=true catches up missed runs (laptop asleep, machine off) on the
+# next boot. RandomizedDelaySec adds 0–5 min of jitter.
+OnCalendar=*-*-* 03:30:00
+Persistent=true
+RandomizedDelaySec=300
+Unit=agent-security-scanner.service
+
+[Install]
+WantedBy=timers.target

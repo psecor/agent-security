@@ -1,0 +1,32 @@
+[Unit]
+# Edit User, Group, WorkingDirectory, EnvironmentFile, and ReadWritePaths to
+# match your install. The paths below assume a checkout at /opt/agent-security
+# owned by user `agent-security` — substitute your own.
+Description=agent-security — security findings HTTP API + UI
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=secorp
+Group=secorp
+WorkingDirectory=/home/secorp/termag/projects/agent-security/service
+EnvironmentFile=/home/secorp/termag/projects/agent-security/service/.env
+# tsx is fine for dev. For production, prefer the compiled output:
+#   (cd service && npm run build) and then:
+ExecStart=/usr/bin/node dist/server/index.js
+Restart=on-failure
+RestartSec=3
+# Modest resource cap — service is a tiny Express app reading JSON.
+MemoryMax=256M
+
+# Hardening.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+# Allow writing the file-based session store under WorkingDirectory/.sessions.
+ReadWritePaths=/home/secorp/termag/projects/agent-security/service/.sessions
+
+[Install]
+WantedBy=multi-user.target

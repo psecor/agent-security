@@ -1,12 +1,13 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Milestones 1–5 done: scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), and the React + Vite UI at /security/. Deploy not yet built."
+status_description: "Milestones 1–6 mostly done: scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), React + Vite UI at /security/, and the deploy bundle (systemd web unit + scanner unit + timer + run-daily.sh + Apache snippet + setup.md walkthrough). Apache splice is live; the user-mode systemd timer is the last bit not yet installed."
 last_updated: 2026-05-03
 last_updated_by:
   - agent:claude-opus-4-7
   - human:secorp
   - agent:sweeper-claude-opus-4-7
+  - agent:claude-opus-4-7
 wiki_schema_version: 1
 ---
 
@@ -18,7 +19,7 @@ A periodic, work-amount, or on-demand security analyst for the workspace. Walks 
 
 ## Status
 
-**In progress.** Milestones 1–5 of the build order are landed: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, and the React + Vite SPA at `/security/`. The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity), and Findings (cross-project rollup with severity + category filters). Deploy is the only remaining build-order item.
+**In progress.** Milestones 1–5 of the build order are landed and milestone 6 (deploy) is mostly done: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, the React + Vite SPA at `/security/`, and the deploy bundle (systemd web unit `deploy/agent-security.service`, oneshot scanner unit `deploy/agent-security-scanner.service`, daily 03:30 timer `deploy/agent-security-scanner.timer`, `deploy/run-daily.sh` entry script, `deploy/apache.conf` proxy snippet, and `deploy/setup.md` walkthrough). The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity), and Findings (cross-project rollup with severity + category filters). The Apache splice is live at `https://secorp.net/security`, reusing the agent-wiki OAuth client; the web service currently runs via `tsx` from a tmux pane, and the user-mode systemd timer is the only deploy step not yet installed.
 
 Decided:
 
@@ -37,7 +38,7 @@ Build order:
 3. ✅ Selector (LOC threshold) + multi-root + `--all` + bot-commit-on-write.
 4. ✅ Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
 5. ✅ React + Vite UI at `/security/`.
-6. Deploy: systemd web unit + scanner unit + timer + Apache splice.
+6. ◐ Deploy: systemd web unit + scanner unit + timer + Apache splice. Apache snippet is live; unit files + run-daily.sh + setup.md are written but not yet installed.
 7. Future: dismissals, PR suggestions, Stop-hook trigger, AGENTS.md summary block.
 
 ## Repository Layout
@@ -58,8 +59,10 @@ agent-security/
 │   ├── tsconfig.json
 │   ├── .env.example
 │   └── src/
+│       ├── cli/
+│       │   └── index.ts       admin CLI: `token create|list|revoke`
 │       ├── scanner/
-│       │   ├── cli.ts         run | run --project | --dry-run | --force (--all TBD)
+│       │   ├── cli.ts         run | run --project | --all | --dry-run | --force
 │       │   ├── run.ts         orchestrates one project's scan
 │       │   ├── tools/
 │       │   │   ├── types.ts   ToolRunner interface + RawFinding shape
@@ -71,26 +74,43 @@ agent-security/
 │       │   ├── source.ts      reads source slices around finding lines for the prompt
 │       │   ├── apply.ts       writes findings/<project>.{json,md} + commits
 │       │   ├── git.ts         per-project diff stats, sha, commit-on-write
-│       │   ├── select.ts      LOC-threshold + force/all logic (TBD)
+│       │   ├── select.ts      LOC-threshold + force/all logic
 │       │   └── types.ts
-│       └── server/            (TBD — none of this exists yet)
+│       └── server/            Express service on 127.0.0.1:3046
 │           ├── index.ts       Express entry; mounts /security on :3046
-│           ├── config.ts
+│           ├── config.ts      env loader
 │           ├── auth.ts        Passport OAuth (humans) + bearer middleware (machines)
-│           ├── tokens.ts      mint / verify; hashed at rest
+│           ├── tokens.ts      mint / verify; hashed at rest in api-tokens.json
 │           ├── api.ts         JSON endpoints under /security/api
 │           └── data.ts        reads findings/*.json
-├── ui/                        React + Vite SPA, served by backend at /security/ (TBD)
-└── deploy/                    (TBD)
-    ├── agent-security.service           systemd unit for the web service
+├── ui/                        React + Vite SPA, served by backend at /security/
+│   ├── index.html
+│   ├── package.json
+│   ├── vite.config.ts         base: '/security/', dev proxy to :3046
+│   ├── tsconfig.json
+│   └── src/
+│       ├── main.tsx           BrowserRouter basename='/security'
+│       ├── App.tsx            routes: Home, Project, Findings, Login
+│       ├── api.ts             fetch wrappers for /security/api/*
+│       ├── styles.css
+│       ├── components/
+│       │   ├── Layout.tsx     shell + nav
+│       │   └── SeverityChip.tsx
+│       └── pages/
+│           ├── Home.tsx       projects table with severity chips
+│           ├── Project.tsx    full findings grouped by severity
+│           ├── Findings.tsx   cross-project rollup with severity + category filters
+│           └── Login.tsx
+└── deploy/
+    ├── agent-security.service           systemd unit for the web service (ships with /opt placeholders — edit before installing)
     ├── agent-security-scanner.service   user-mode oneshot invoked by timer
-    ├── agent-security-scanner.timer     daily 03:30 fan-out
-    ├── run-daily.sh                     timer entrypoint: scanner --all
-    ├── apache.conf                      ProxyPass /security → 127.0.0.1:3046
+    ├── agent-security-scanner.timer     daily 03:30 fan-out (offset from agent-wiki's 03:00)
+    ├── run-daily.sh                     timer entrypoint: scanner --all + best-effort `git push origin`
+    ├── apache.conf                      ProxyPass /security → 127.0.0.1:3046 (already spliced into secorp.conf)
     └── setup.md                         install walkthrough
 ```
 
-Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` owns the Claude pass over `RawFinding[]`; `source.ts` reads the source-window slices that get embedded in the prompt. `prompt.ts` assembles, `claude.ts` is just the API wrapper.
+Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` owns the Claude pass over `RawFinding[]`; `source.ts` reads the source-window slices that get embedded in the prompt. `prompt.ts` assembles, `claude.ts` is just the API wrapper. The admin CLI lives at `service/src/cli/index.ts` (separate from the scanner CLI) and is the entry point for token management.
 
 ## Architecture
 
@@ -196,26 +216,34 @@ API tokens for machine clients live in `service/api-tokens.json` (gitignored), p
 # backend
 cd service
 npm install
-npm run scanner -- run --project rssreader --dry-run   # one project, no commit (works today)
-npm run server                                          # tsx → :3046 (TBD — server not built)
+npm run scanner -- run --project rssreader --dry-run   # one project, no commit
+npm run server                                          # tsx → :3046
 
-# UI dev with HMR (TBD)
+# UI dev with HMR
 cd ui
 npm install
 npm run dev                                             # vite → :5173, proxies /security/{api,auth} → :3046
+npm run build                                           # emits ui/dist/, served by backend in prod
 ```
 
 **Scanner CLI:**
 
 ```bash
-npm run scanner -- run --project rssreader              # scan one project, write+commit (works)
-npm run scanner -- run --project foo --dry-run          # show diff without writing or committing (works)
-npm run scanner -- run --project foo --force            # ignore selector (works; selector is the no-op default today)
-npm run scanner -- run --all                            # selector decides which projects qualify (TBD)
-npm run cli -- token create --name jira                 # mint a bearer token for a machine client (TBD)
+npm run scanner -- run --project rssreader              # scan one project, write+commit
+npm run scanner -- run --project foo --dry-run          # show diff without writing or committing
+npm run scanner -- run --project foo --force            # ignore selector
+npm run scanner -- run --all                            # selector decides which projects qualify
 ```
 
-**Production deploy** (TBD): mirrors agent-wiki — `deploy/agent-security.service` runs the web process on `127.0.0.1:3046`; Apache splice in `deploy/apache.conf` proxies `/security`. Daily fan-out via `agent-security-scanner.timer` at 03:30. Walkthrough will land in `deploy/setup.md`.
+**Admin CLI** (`service/src/cli/index.ts`):
+
+```bash
+npm run cli -- token create --name jira                 # mint a bearer token; plaintext shown once
+npm run cli -- token list                               # list tokens by name + created-at
+npm run cli -- token revoke --name jira                 # remove a token
+```
+
+**Production deploy:** mirrors agent-wiki. `deploy/agent-security.service` runs the compiled web process (`node dist/server/index.js`) on `127.0.0.1:3046` under a hardened systemd unit (`ProtectHome=read-only`, `ReadWritePaths` for `service/.sessions`). The committed unit ships with `/opt/agent-security/...` placeholders — edit `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ReadWritePaths` to match your install before `sudo cp`-ing into `/etc/systemd/system/`. The Apache splice in `deploy/apache.conf` proxies `/security` and is already live on `secorp.net` (added inside the existing `*:443` vhost in `/etc/apache2/sites-enabled/secorp.conf`). Daily fan-out is `deploy/agent-security-scanner.timer` (03:30 local, offset from agent-wiki's 03:00) firing `agent-security-scanner.service` (user-mode oneshot) which runs `deploy/run-daily.sh`: that script loads `service/.env`, runs `node dist/scanner/cli.js run --all`, then best-effort `git push origin` if a remote is configured. Output is tee'd to `~/.local/state/agent-security/last-run.log`. Full step-by-step in `deploy/setup.md`.
 
 ## Observability & Maintenance
 

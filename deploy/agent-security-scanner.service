@@ -1,0 +1,21 @@
+[Unit]
+Description=agent-security — daily scan fan-out (oneshot)
+After=network-online.target
+Wants=network-online.target
+
+# User-mode service: runs in your user systemd session via `systemctl --user`,
+# so it can write findings/<project>.{json,md} into the agent-security repo
+# and run `git commit` (and optionally `git push`) under your identity,
+# without the ProtectHome=read-only sandbox the main agent-security.service
+# uses.
+#
+# Edit ExecStart to point at your checkout's deploy/run-daily.sh.
+
+[Service]
+Type=oneshot
+ExecStart=%h/agent-security/deploy/run-daily.sh
+# Semgrep + Anthropic API calls across many projects can take 5–10 minutes.
+TimeoutStartSec=20min
+
+[Install]
+WantedBy=default.target
