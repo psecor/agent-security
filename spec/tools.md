@@ -1,6 +1,6 @@
 # Tools spec — v1
 
-Defines the `ToolRunner` interface, the `RawFinding` shape that runners emit, and how a user adds their own tools to the scan pipeline. The bundled implementation is Semgrep; everything else plugs in through the same interface.
+Defines the `ToolRunner` interface, the `RawFinding` shape that runners emit, and how a user adds their own tools to the scan pipeline. Two runners are bundled today — Semgrep (static analysis on the working tree) and Gitleaks (secret detection across full git history); both implement the same interface, so adding a third is the same shape.
 
 The triage layer (Claude) is **not** a tool in this sense. Tools are deterministic detectors that produce `RawFinding[]`; the triage layer consumes them, dedups, ranks, writes rationale, and emits the final `Finding[]` defined in `findings-schema.md`.
 
@@ -89,39 +89,9 @@ Reject only when the tool fundamentally cannot run: binary not found, OOM, JSON 
 
 ## Tool registry
 
-Tools are discovered in this order, last write wins:
+Today: hardcoded. `service/src/scanner/run.ts` exports `REGISTERED_TOOLS: ToolRunner[]`, currently `[new SemgrepRunner(), new GitleaksRunner()]`. Add a third by importing the runner module and appending the instance to that array.
 
-1. **Bundled** — `semgrep` is registered automatically.
-2. **Workspace config** — `service/agent-security.config.yml` (gitignored) lists additional tools.
-3. **Per-project override** — `<project>/.agent-security.yml` enables, disables, or replaces tools just for that project.
-
-Config shape (workspace level):
-
-```yaml
-tools:
-  - name: semgrep
-    enabled: true
-    # Tool-specific config is passed through to the runner verbatim.
-    config:
-      rulesets:
-        - p/security-audit
-        - p/secrets
-
-  - name: gitleaks
-    # Custom command-style runner. Built-in adapter ("command") parses output
-    # according to `format` and synthesizes RawFindings from a path mapping.
-    runner: command
-    command: "gitleaks detect --source {{projectPath}} --report-format json --report-path {{out}} --no-git"
-    format: gitleaks-json
-    # rule_id_template and severity defaults can be overridden here.
-
-  - name: my-custom
-    # Module path — anything that exports `default: ToolRunner` is fine.
-    runner: module
-    module: ./extensions/my-custom-tool.js
-```
-
-Per-project config can disable a workspace tool (`enabled: false`) or override its config block. It cannot widen tool reach beyond what's registered at the workspace level — adding a brand-new tool from a per-project file is rejected, because the project repo is untrusted relative to the scanner host.
+A YAML-driven registry (workspace `service/agent-security.config.yml` + per-project `.agent-security.yml` overrides, with a generic `command` adapter for shell-out tools) was sketched out as the v1 design but deferred. With two bundled tools and zero user-supplied additions, the indirection has no users to fit. When a third tool — especially a per-user one — shows up, the abstraction will have a real shape to take. Until then, hardcoding keeps the registration site greppable and the failure modes obvious.
 
 ---
 
@@ -147,22 +117,34 @@ Version pinning: see Gotcha #5 in the project AGENTS.md. We record the binary ve
 
 ---
 
+## Bundled runner: Gitleaks
+
+`scanner/tools/gitleaks.ts` shells out to the `gitleaks` binary in the host's PATH and parses its `--report-format json` output file. Unlike Semgrep (which scans the working tree), Gitleaks walks the **full git history** by default — a credential committed and later removed still surfaces, which is the entire reason it earns its slot.
+
+Defaults:
+
+- Command: `gitleaks detect --source <projectPath> --report-format json --report-path <scratchDir>/gitleaks.json --redact --no-banner --exit-code 1`.
+- Rules: gitleaks' built-in default ruleset (~150 patterns covering AWS, GCP, Slack, GitHub, Stripe, generic high-entropy strings, etc.). No custom config is shipped.
+- `--redact`: secret values are masked in the JSON report, so they never land in `findings/*.json` even when a finding fires.
+- Severity mapping: gitleaks has no per-finding severity, so the runner synthesizes `"HIGH"`. The triage layer can downgrade based on context (test fixtures, demo strings, etc.).
+- Timeout: 300s per project.
+
+Failure modes:
+
+- `gitleaks` binary not in PATH → reject with an install hint pointing at `https://github.com/gitleaks/gitleaks/releases`.
+- Exit code 0 → no leaks (success path, may produce no report file).
+- Exit code 1 → leaks found, parse the report file (success path).
+- Other exit codes → reject with the captured stderr tail.
+
+`StartLine: 0` (gitleaks emits this for leaks inside commit messages rather than file bodies) is clamped to 1 so downstream source-slicing doesn't choke; the commit SHA is still preserved in `raw.Commit` for triage context.
+
+---
+
 ## Adding a new tool
 
-For an in-process runner (preferred when you have a TypeScript wrapper):
+Today: implement `ToolRunner` in `service/src/scanner/tools/<name>.ts`, then append `new YourRunner()` to `REGISTERED_TOOLS` in `service/src/scanner/run.ts`. That's it — the orchestrator does the rest (version recording, error capture into `tools_failed[]`, raw-finding aggregation into the triage layer).
 
-1. Implement `ToolRunner` in a module under `service/src/scanner/tools/extensions/`.
-2. Add a registry entry to `service/agent-security.config.yml`:
-   ```yaml
-   - name: my-tool
-     runner: module
-     module: ./extensions/my-tool.js
-   ```
-3. Re-run the scanner. The runner is picked up on next `--all` or any explicit `--project` run.
-
-For a shell-out tool with JSON output, prefer the bundled `command` runner (config-only, no code). It handles a small set of well-known JSON shapes (`gitleaks-json`, `semgrep-json`, `bandit-json`, `npm-audit-json`); add a new `format` mapping if your tool's output isn't already covered.
-
-If the tool requires more than a JSON adapter (e.g. multiple subprocess calls, post-processing), write an in-process runner.
+When the third or fourth tool gets added — especially a per-user one — reconsider the YAML-driven registry. The current arrangement is intentional: two tools don't need a config schema.
 
 ---
 

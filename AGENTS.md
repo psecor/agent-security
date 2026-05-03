@@ -1,7 +1,7 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Milestones 1–6 mostly done: scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), React + Vite UI at /security/, and the deploy bundle (systemd web unit + scanner unit + timer + run-daily.sh + Apache snippet + setup.md walkthrough). Apache splice is live; the user-mode systemd timer is the last bit not yet installed."
+status_description: "Milestones 1–6 complete: scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), React + Vite UI at /security/, and the deploy bundle are all landed and the first end-to-end --all run committed findings for ~17 projects."
 last_updated: 2026-05-03
 last_updated_by:
   - agent:claude-opus-4-7
@@ -15,16 +15,16 @@ wiki_schema_version: 1
 
 ## What This Is
 
-A periodic, work-amount, or on-demand security analyst for the workspace. Walks configured project roots (default `~/termag/projects`), runs static analysis (Semgrep bundled, others pluggable), feeds raw findings + relevant source slices to Claude for triage and prioritization, and writes structured findings into this repo at `findings/<project>.{json,md}`. A small Express service exposes the rollup at `https://secorp.net/security` (Apache → 127.0.0.1:3046) for humans (Google OAuth allowlist) and machines (bearer tokens, e.g. Jira / ticketing scripts).
+A periodic, work-amount, or on-demand security analyst for the workspace. Walks configured project roots (default `~/termag/projects`), runs static analysis (Semgrep + Gitleaks bundled, others pluggable), feeds raw findings + relevant source slices to Claude for triage and prioritization, and writes structured findings into this repo at `findings/<project>.{json,md}`. A small Express service exposes the rollup at `https://secorp.net/security` (Apache → 127.0.0.1:3046) for humans (Google OAuth allowlist) and machines (bearer tokens, e.g. Jira / ticketing scripts).
 
 ## Status
 
-**In progress.** Milestones 1–5 of the build order are landed and milestone 6 (deploy) is mostly done: scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, the React + Vite SPA at `/security/`, and the deploy bundle (systemd web unit `deploy/agent-security.service`, oneshot scanner unit `deploy/agent-security-scanner.service`, daily 03:30 timer `deploy/agent-security-scanner.timer`, `deploy/run-daily.sh` entry script, `deploy/apache.conf` proxy snippet, and `deploy/setup.md` walkthrough). The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity), and Findings (cross-project rollup with severity + category filters). The Apache splice is live at `https://secorp.net/security`, reusing the agent-wiki OAuth client; the web service currently runs via `tsx` from a tmux pane, and the user-mode systemd timer is the only deploy step not yet installed.
+**In progress, but functionally complete for v1.** Milestones 1–6 of the build order are landed. The scanner has been run end-to-end across the workspace: `findings/*.{json,md}` exist for ~17 projects (rssreader and claude-code-proxy-bot have triaged highs; everything else came back clean at first scan). Scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, the React + Vite SPA at `/security/`, and the deploy bundle (systemd web unit `deploy/agent-security.service`, oneshot scanner unit `deploy/agent-security-scanner.service`, daily 03:30 timer `deploy/agent-security-scanner.timer`, `deploy/run-daily.sh` entry script, `deploy/apache.conf` proxy snippet, and `deploy/setup.md` walkthrough) are all in place. The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity), and Findings (cross-project rollup with severity + category filters). The Apache splice is live at `https://secorp.net/security`, reusing the agent-wiki OAuth client. First-run shook out two real bugs (PATH not set for systemd user units, unborn-repo crash on freshly-`git init`'d projects), both fixed in `a3cf5cc`.
 
 Decided:
 
 - Standalone repo (not a module of agent-wiki). Rationale: security findings have a different lifecycle (open/regress/dismiss) than docs (drift), and a dedicated prompt/cadence reads cleaner than a multi-purpose sweeper.
-- Hybrid analysis: Semgrep bundled as the default static pass; Claude does triage, prioritization, severity ranking, and rationale. Tool runner is pluggable so `gitleaks`, `bandit`, `npm audit`, etc. can be added per-user.
+- Hybrid analysis: Semgrep (working-tree static analysis) and Gitleaks (full-history secret detection) bundled as default tool runners; Claude does triage, prioritization, severity ranking, and rationale. The `ToolRunner` interface is small enough that adding `bandit`, `npm audit`, etc. is a TS file plus a one-line registration in `run.ts`.
 - Findings live centrally in this repo at `findings/<project>.{json,md}`, committed by a bot identity each scan. v1 does **not** write back into project AGENTS.md files; the wiki UI links across to `/security/projects/<name>` instead.
 - Triggers: daily systemd timer at 03:30 (offset from agent-wiki's 03:00) plus LOC-threshold selector (default 200 LOC changed since `last_scanned_sha`). Manual CLI for on-demand. Stop-hook deferred.
 - No dismissals in v1. Each scan fully replaces the findings file. Add `dismissals/<project>.json` later if noise warrants.
@@ -38,7 +38,7 @@ Build order:
 3. ✅ Selector (LOC threshold) + multi-root + `--all` + bot-commit-on-write.
 4. ✅ Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
 5. ✅ React + Vite UI at `/security/`.
-6. ◐ Deploy: systemd web unit + scanner unit + timer + Apache splice. Apache snippet is live; unit files + run-daily.sh + setup.md are written but not yet installed.
+6. ✅ Deploy: systemd web unit + scanner unit + timer + Apache splice. Apache splice is live, unit files installed, first real `--all` run completed and committed.
 7. Future: dismissals, PR suggestions, Stop-hook trigger, AGENTS.md summary block.
 
 ## Repository Layout
@@ -65,9 +65,9 @@ agent-security/
 │       │   ├── cli.ts         run | run --project | --all | --dry-run | --force
 │       │   ├── run.ts         orchestrates one project's scan
 │       │   ├── tools/
-│       │   │   ├── types.ts   ToolRunner interface + RawFinding shape
-│       │   │   ├── semgrep.ts bundled default
-│       │   │   └── registry.ts loads user-configured extras (TBD)
+│       │   │   ├── types.ts    ToolRunner interface + RawFinding shape
+│       │   │   ├── semgrep.ts  bundled: working-tree static analysis
+│       │   │   └── gitleaks.ts bundled: full-history secret detection
 │       │   ├── prompt.ts      security-analyst prompt + tool-output assembly
 │       │   ├── claude.ts      Anthropic API wrapper
 │       │   ├── triage.ts      runs Claude over RawFindings → Finding[]
@@ -119,7 +119,7 @@ Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` ow
                    │             agent-security scanner               │
 Daily timer ──────▶│                                                  │
 LOC-threshold ────▶│  select projects ──▶ for each project:           │
-Manual CLI ───────▶│      run ToolRunners (semgrep + user-configured) │
+Manual CLI ───────▶│      run ToolRunners (semgrep + gitleaks + …)    │
                    │      → RawFindings[]                             │
                    │      assemble prompt (tool output + source)      │
                    │      Claude API: triage, rank, dedup, rationale  │
@@ -143,7 +143,7 @@ Jira/scripts ─────Bearer token─────────────�
 
 **Trade-off: hybrid (Semgrep + Claude) vs. pure-LLM scanning** — chose hybrid. Semgrep gives deterministic, reproducible findings tied to named rules with known precision/recall, runs locally for free, and covers all the languages in the workspace. Pure-LLM scans are noisy, expensive, and unstable across runs. Claude's job is triage and contextual prioritization, not pattern detection.
 
-**Trade-off: bundled tool vs. fully pluggable** — chose "one bundled, others pluggable." A zero-config default makes the tool useful out of the box; the registry lets a user add `gitleaks`, `bandit`, `npm audit`, etc. without forking. Each tool's output is normalized to a common `RawFinding` shape before triage.
+**Trade-off: bundled tools vs. config-driven registry** — chose "two bundled, hardcoded for now." Semgrep covers working-tree static analysis; Gitleaks covers full-history secret detection — the two cheap-to-run, high-signal axes worth running on every project. A YAML registry that loads user-configured extras was sketched in `spec/tools.md` but deferred: with two tools and zero outside contributors, the indirection has no users to fit. Adding a third (e.g. `bandit`, `npm audit`) is one TS file plus a one-line append to `REGISTERED_TOOLS` in `run.ts`. Each tool's output is normalized to the common `RawFinding` shape before triage.
 
 **Trade-off: report-only vs. propose-patches in v1** — chose report-only. Patch generation needs branch hygiene, signing, and a review loop that's worth its own iteration. Findings-first lets us learn what the noise floor looks like before automating fixes.
 
@@ -280,9 +280,13 @@ A Jira / ticketing integration looks like: scheduled job hits `/security/api/fin
 
 4. **Port 3046, prefix `/security`** — must agree across `PATH_PREFIX` env, `vite.config.ts` (`base: '/security/'`), `BrowserRouter` (`basename="/security"`), the systemd unit, and the Apache snippet. Changing the prefix requires touching all five.
 
-5. **Bundled tool is Semgrep — version pinning matters** — Semgrep rule packs change. Pin a Semgrep version in `service/package.json` (or a Docker image) so finding IDs are reproducible. A rule pack upgrade is itself a sweep-worthy event; bumping it should be a deliberate commit, not a transitive dep float.
+5. **Bundled tools are version-sensitive** — Semgrep rule packs and Gitleaks default rules both evolve, and a rule update can flip a project from "0 findings" to "10 findings" with no actual code change. Both tool versions are recorded in `tools_run[].version` in every `findings/<project>.json` so you can correlate a regression to a tool bump rather than a code change. Bumping either is a deliberate commit, not a transitive dep float — and worth a sweep-worthy review of the diffs that the new rules surface.
 
 6. **Multi-root name collisions** — two roots can both contain `foo/`. The scanner qualifies findings by root index (`projects/foo`, `other-root/foo`). The UI shows the qualified name; bare `foo` is ambiguous and rejected in API queries.
+
+7. **systemd user units start with an empty `PATH`** — `npx`, `node`, `git`, and `semgrep` all need to resolve, and a user-mode service unit doesn't inherit your login shell's environment. `run-daily.sh` exports a sensible `PATH` (including `~/.nvm`/`~/.local/bin`) before invoking the scanner; don't bypass it by calling `node dist/scanner/cli.js` directly from the unit. Symptom on first deploy was a silent exit with `npx: command not found` in `last-run.log`.
+
+8. **Unborn repos crash `git rev-parse HEAD`** — a freshly-`git init`'d project with no commits has no `HEAD`, and the scanner used to die there. `select.ts` / `git.ts` now treat unborn repos as "never scanned, no diff stats" and skip them cleanly. If you add a new git wrapper, mirror that defense — `git symbolic-ref -q HEAD` succeeds on an unborn repo but `rev-parse HEAD` does not.
 
 ## Related
 

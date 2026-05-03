@@ -13,6 +13,7 @@ import {
   isGitRepo,
   isInsideWorkTree,
 } from "./git.js";
+import { GitleaksRunner } from "./tools/gitleaks.js";
 import { SemgrepRunner } from "./tools/semgrep.js";
 import type { ToolRunner, ToolRunRecord, RawFinding, ToolContext } from "./tools/types.js";
 import { triage } from "./triage.js";
@@ -63,7 +64,7 @@ export interface RunReport {
   error?: string;
 }
 
-const REGISTERED_TOOLS: ToolRunner[] = [new SemgrepRunner()];
+const REGISTERED_TOOLS: ToolRunner[] = [new SemgrepRunner(), new GitleaksRunner()];
 
 export async function scanProject(opts: RunOptions): Promise<RunReport> {
   const { projectPath, projectKey, log } = opts;
