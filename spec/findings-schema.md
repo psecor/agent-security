@@ -24,8 +24,8 @@ For multi-root setups (see `PROJECT_ROOTS`), the basename is the qualified proje
 {
   // Project identity
   "project": "rssreader",                              // bare name (or qualified key for multi-root)
-  "root": "/home/secorp/termag/projects",              // absolute path to the root this project lives under
-  "project_path": "/home/secorp/termag/projects/rssreader",
+  "root": "/path/to/projects",                         // absolute path to the root this project lives under
+  "project_path": "/path/to/projects/rssreader",
 
   // Scan metadata
   "scanner_version": "0.1.0",                          // agent-security package version at scan time

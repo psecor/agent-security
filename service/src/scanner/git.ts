@@ -7,8 +7,10 @@
 
 import { spawnSync } from "node:child_process";
 
-const BOT_USER = "agent-security[bot]";
-const BOT_EMAIL = "bot+agent-security@secorp.net";
+// Identity used for the auto-commits that record findings. Override via env
+// (e.g. to scope commits to a real account, or to a domain you control).
+const BOT_USER = process.env.SCANNER_BOT_USER ?? "agent-security[bot]";
+const BOT_EMAIL = process.env.SCANNER_BOT_EMAIL ?? "agent-security-bot@example.invalid";
 
 function git(args: string[], cwd: string): { code: number; stdout: string; stderr: string } {
   const r = spawnSync("git", args, { cwd, encoding: "utf8" });

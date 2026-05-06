@@ -1,8 +1,8 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Milestones 1–6 complete: scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), React + Vite UI at /security/, and the deploy bundle are all landed and the first end-to-end --all run committed findings for ~17 projects."
-last_updated: 2026-05-03
+status_description: "Milestones 1–6 complete plus Gitleaks bundling and per-project scan history viewer; scanner, triage, selector, Express server (OAuth + bearer JSON API on port 3046), React + Vite UI at /security/, and the deploy bundle are all landed, the second end-to-end --all run committed findings for ~17 projects, and the daily systemd timer is now firing on schedule in production."
+last_updated: 2026-05-06
 last_updated_by:
   - agent:claude-opus-4-7
   - human:secorp
@@ -15,11 +15,11 @@ wiki_schema_version: 1
 
 ## What This Is
 
-A periodic, work-amount, or on-demand security analyst for the workspace. Walks configured project roots (default `~/termag/projects`), runs static analysis (Semgrep + Gitleaks bundled, others pluggable), feeds raw findings + relevant source slices to Claude for triage and prioritization, and writes structured findings into this repo at `findings/<project>.{json,md}`. A small Express service exposes the rollup at `https://secorp.net/security` (Apache → 127.0.0.1:3046) for humans (Google OAuth allowlist) and machines (bearer tokens, e.g. Jira / ticketing scripts).
+A periodic, work-amount, or on-demand security analyst for the workspace. Walks configured project roots, runs static analysis (Semgrep + Gitleaks bundled, others pluggable), feeds raw findings + relevant source slices to Claude for triage and prioritization, and writes structured findings into this repo at `findings/<project>.{json,md}`. A small Express service exposes the rollup behind a reverse proxy (Apache → 127.0.0.1:3046) for humans (Google OAuth allowlist) and machines (bearer tokens, e.g. Jira / ticketing scripts).
 
 ## Status
 
-**In progress, but functionally complete for v1.** Milestones 1–6 of the build order are landed. The scanner has been run end-to-end across the workspace: `findings/*.{json,md}` exist for ~17 projects (rssreader and claude-code-proxy-bot have triaged highs; everything else came back clean at first scan). Scanner skeleton with bundled Semgrep runner, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, the React + Vite SPA at `/security/`, and the deploy bundle (systemd web unit `deploy/agent-security.service`, oneshot scanner unit `deploy/agent-security-scanner.service`, daily 03:30 timer `deploy/agent-security-scanner.timer`, `deploy/run-daily.sh` entry script, `deploy/apache.conf` proxy snippet, and `deploy/setup.md` walkthrough) are all in place. The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity), and Findings (cross-project rollup with severity + category filters). The Apache splice is live at `https://secorp.net/security`, reusing the agent-wiki OAuth client. First-run shook out two real bugs (PATH not set for systemd user units, unborn-repo crash on freshly-`git init`'d projects), both fixed in `a3cf5cc`.
+**In progress, but functionally complete for v1.** Milestones 1–6 of the build order are landed, plus two follow-ups: Gitleaks was added as the second bundled tool runner, and a per-project scan history viewer shipped on top of the existing UI. The scanner has been run end-to-end across the workspace twice, and the daily systemd timer has since been observed firing in production (May 4 self-scan, May 5 termag rescan), so the deploy is exercised end-to-end and not just at install time. `findings/*.{json,md}` exist for ~17 projects (rssreader and claude-code-proxy-bot have triaged highs; everything else came back clean). Scanner skeleton with bundled Semgrep + Gitleaks runners, Claude triage layer writing `findings/<project>.{json,md}`, the LOC-threshold selector + multi-root + `--all` + bot-commit-on-write, the Express server with Google OAuth (humans) + bearer-token (machines) auth + JSON API, the React + Vite SPA at `/security/`, and the deploy bundle (systemd web unit `deploy/agent-security.service`, oneshot scanner unit `deploy/agent-security-scanner.service`, daily 03:30 timer `deploy/agent-security-scanner.timer`, `deploy/run-daily.sh` entry script, `deploy/apache.conf` proxy snippet, and `deploy/setup.md` walkthrough) are all in place. The scanner is self-driving — `npm run scanner -- run --all` discovers AGENTS.md-marked projects under `PROJECT_ROOTS`, picks ones with ≥`LOC_THRESHOLD` (default 200) LOC changed since `last_scanned_sha`, scans them, and commits the findings as `agent-security[bot]`. The server (`npm run server` → `127.0.0.1:3046`, mounted at `/security`) reads `findings/*.json` on demand, serves the rollup at `GET /security/api/{health,projects,projects/:name,projects/:name/history,findings}`, and hosts the UI bundle from `ui/dist`. `npm run cli -- token create --name <name>` mints bearer tokens stored hashed in `service/api-tokens.json`. The UI has Home (projects table with severity chips), Project (full findings grouped by severity, with a per-project scan-history view derived from `git log findings/<project>.json`), and Findings (cross-project rollup with severity + category filters). The Apache splice is live at `https://secorp.net/security`, reusing the agent-wiki OAuth client. First-run shook out two real bugs (PATH not set for systemd user units, unborn-repo crash on freshly-`git init`'d projects), both fixed in `a3cf5cc`; subsequent timer-driven runs have been clean.
 
 Decided:
 
@@ -38,8 +38,10 @@ Build order:
 3. ✅ Selector (LOC threshold) + multi-root + `--all` + bot-commit-on-write.
 4. ✅ Express server: OAuth + bearer-token middleware + JSON API (no UI yet — Jira can integrate at this point).
 5. ✅ React + Vite UI at `/security/`.
-6. ✅ Deploy: systemd web unit + scanner unit + timer + Apache splice. Apache splice is live, unit files installed, first real `--all` run completed and committed.
-7. Future: dismissals, PR suggestions, Stop-hook trigger, AGENTS.md summary block.
+6. ✅ Deploy: systemd web unit + scanner unit + timer + Apache splice. Apache splice is live, unit files installed, and the timer has now fired cleanly on its own schedule.
+7. ✅ Gitleaks bundled as second tool runner (full-history secret detection alongside Semgrep's working-tree static analysis).
+8. ✅ Per-project scan history viewer (UI + `/security/api/projects/:name/history`, derived from `git log findings/<project>.json`).
+9. Future: dismissals, PR suggestions, Stop-hook trigger, AGENTS.md summary block.
 
 ## Repository Layout
 
@@ -106,7 +108,7 @@ agent-security/
     ├── agent-security-scanner.service   user-mode oneshot invoked by timer
     ├── agent-security-scanner.timer     daily 03:30 fan-out (offset from agent-wiki's 03:00)
     ├── run-daily.sh                     timer entrypoint: scanner --all + best-effort `git push origin`
-    ├── apache.conf                      ProxyPass /security → 127.0.0.1:3046 (already spliced into secorp.conf)
+    ├── apache.conf                      ProxyPass /security → 127.0.0.1:3046 (splice into your existing vhost)
     └── setup.md                         install walkthrough
 ```
 
@@ -158,7 +160,7 @@ Jira/scripts ─────Bearer token─────────────�
 ```json
 {
   "project": "rssreader",
-  "root": "/home/secorp/termag/projects",
+  "root": "/path/to/projects",
   "last_scanned": "2026-05-02T03:30:00Z",
   "last_scanned_sha": "abc1234",
   "loc_at_scan": 4231,
@@ -193,12 +195,12 @@ Service config is environment-driven via `service/.env` (gitignored). Required:
 
 | Var | Notes |
 |-----|-------|
-| `BASE_URL` | `https://secorp.net` in prod, `http://localhost:3046` for local |
+| `BASE_URL` | Public URL where the service is reachable (e.g. `https://example.com`) |
 | `PATH_PREFIX` | `/security` (default). All routes mount under this. |
 | `SESSION_SECRET` | Long random hex; rotating invalidates all human sessions |
 | `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | OAuth client; redirect URI is `${BASE_URL}${PATH_PREFIX}/auth/google/callback` |
-| `ALLOWED_EMAILS` | Comma-separated allowlist (default: `secorp@gmail.com`) |
-| `PROJECT_ROOTS` | Comma-separated absolute paths (default: `/home/secorp/termag/projects`) |
+| `ALLOWED_EMAILS` | Comma-separated allowlist (required) |
+| `PROJECT_ROOTS` | Comma-separated absolute paths to project roots (required) |
 | `FINDINGS_DIR` | Where the scanner writes findings (default: `<repo>/findings`) |
 | `LOC_THRESHOLD` | LOC-changed threshold for selector (default: `200`) |
 | `ANTHROPIC_API_KEY` | For the triage layer |
@@ -243,7 +245,7 @@ npm run cli -- token list                               # list tokens by name + 
 npm run cli -- token revoke --name jira                 # remove a token
 ```
 
-**Production deploy:** mirrors agent-wiki. `deploy/agent-security.service` runs the compiled web process (`node dist/server/index.js`) on `127.0.0.1:3046` under a hardened systemd unit (`ProtectHome=read-only`, `ReadWritePaths` for `service/.sessions`). The committed unit ships with `/opt/agent-security/...` placeholders — edit `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ReadWritePaths` to match your install before `sudo cp`-ing into `/etc/systemd/system/`. The Apache splice in `deploy/apache.conf` proxies `/security` and is already live on `secorp.net` (added inside the existing `*:443` vhost in `/etc/apache2/sites-enabled/secorp.conf`). Daily fan-out is `deploy/agent-security-scanner.timer` (03:30 local, offset from agent-wiki's 03:00) firing `agent-security-scanner.service` (user-mode oneshot) which runs `deploy/run-daily.sh`: that script loads `service/.env`, runs `node dist/scanner/cli.js run --all`, then best-effort `git push origin` if a remote is configured. Output is tee'd to `~/.local/state/agent-security/last-run.log`. Full step-by-step in `deploy/setup.md`.
+**Production deploy:** mirrors agent-wiki. `deploy/agent-security.service` runs the compiled web process (`node dist/server/index.js`) on `127.0.0.1:3046` under a hardened systemd unit (`ProtectHome=read-only`, `ReadWritePaths` for `service/.sessions`). The committed unit ships with `/opt/agent-security/...` placeholders — edit `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ReadWritePaths` to match your install before `sudo cp`-ing into `/etc/systemd/system/`. The Apache splice in `deploy/apache.conf` proxies `/security` — add it inside your existing HTTPS `*:443` vhost. Daily fan-out is `deploy/agent-security-scanner.timer` (03:30 local, offset from agent-wiki's 03:00) firing `agent-security-scanner.service` (user-mode oneshot) which runs `deploy/run-daily.sh`: that script loads `service/.env`, runs `node dist/scanner/cli.js run --all`, then best-effort `git push origin` if a remote is configured. Output is tee'd to `~/.local/state/agent-security/last-run.log`. Full step-by-step in `deploy/setup.md`.
 
 ## Observability & Maintenance
 
@@ -261,6 +263,7 @@ JSON API, intentionally small. All endpoints accept either a session cookie (hum
 |----------|---------|
 | `GET /security/api/projects` | List of projects with `last_scanned`, severity counts, `loc_at_scan` |
 | `GET /security/api/projects/:name` | Full findings for one project |
+| `GET /security/api/projects/:name/history` | Per-scan history for one project, derived from `git log findings/<project>.json` (commit sha, scan timestamp, severity counts) |
 | `GET /security/api/findings?severity=high&category=injection&since=2026-05-01` | Cross-project rollup with filters; capped |
 | `GET /security/api/health` | `{ ok: true }` (unauthenticated) |
 | `POST /security/api/tokens` | (admin only) mint a new bearer token; plaintext returned once |

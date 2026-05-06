@@ -39,7 +39,7 @@ function usage(): string {
     "  --no-commit        write findings to disk but don't auto-commit them",
     "",
     "env:",
-    "  PROJECT_ROOTS      comma-separated absolute paths (default: /home/secorp/termag/projects)",
+    "  PROJECT_ROOTS      comma-separated absolute paths to project roots (required)",
     "  FINDINGS_DIR       output directory (default: <repo>/findings)",
     "  LOC_THRESHOLD      changed-LOC threshold for --all (default: 200)",
     "  ANTHROPIC_API_KEY  required unless --no-triage",
@@ -89,7 +89,13 @@ function parseArgs(argv: string[]): CliArgs {
 }
 
 function getProjectRoots(): string[] {
-  const raw = process.env.PROJECT_ROOTS ?? "/home/secorp/termag/projects";
+  const raw = process.env.PROJECT_ROOTS;
+  if (!raw) {
+    throw new Error(
+      "PROJECT_ROOTS must be set — comma-separated absolute paths to the parent dirs " +
+      "containing the projects you want to scan.",
+    );
+  }
   return raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 

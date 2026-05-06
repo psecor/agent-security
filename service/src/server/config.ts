@@ -29,7 +29,7 @@ export const config = {
   sessionSecret: required("SESSION_SECRET"),
   googleClientId: required("GOOGLE_CLIENT_ID"),
   googleClientSecret: required("GOOGLE_CLIENT_SECRET"),
-  allowedEmails: optional("ALLOWED_EMAILS", "secorp@gmail.com")
+  allowedEmails: required("ALLOWED_EMAILS")
     .split(",")
     .map((s) => s.trim().toLowerCase())
     .filter(Boolean),
