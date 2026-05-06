@@ -8,10 +8,12 @@
 # ~/.local/state/agent-security/last-run.log for at-a-glance review without
 # `journalctl` ceremony.
 #
-# If the agent-security repo has an `origin` remote configured, the script
-# also pushes the bot commits at the end so the central findings rollup
-# stays in sync off-host. The push step is best-effort — a failed push does
-# not fail the run (findings are already on disk locally).
+# If the findings repo has an `origin` remote configured, the script also
+# pushes the bot commits at the end so the central findings rollup stays in
+# sync off-host. "Findings repo" = the git repo containing FINDINGS_DIR if
+# that var is set, otherwise the agent-security source repo (legacy single-
+# repo layout). The push step is best-effort — a failed push does not fail
+# the run (findings are already on disk locally).
 #
 # Run interactively to dry-test:
 #   <repo>/deploy/run-daily.sh
@@ -54,9 +56,19 @@ cd "${SERVICE_DIR}"
   /usr/bin/node dist/scanner/cli.js run --all
   echo
 
-  if git -C "${REPO_DIR}" remote get-url origin >/dev/null 2>&1; then
-    echo ">>> git push origin (best-effort)"
-    if git -C "${REPO_DIR}" push origin HEAD; then
+  # Resolve the repo that holds findings. With FINDINGS_DIR pointing at a
+  # private companion repo, push from there. Otherwise fall back to the source
+  # repo (single-repo layout).
+  PUSH_DIR=""
+  if [[ -n "${FINDINGS_DIR:-}" ]] && git -C "${FINDINGS_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    PUSH_DIR="$(git -C "${FINDINGS_DIR}" rev-parse --show-toplevel)"
+  elif git -C "${REPO_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    PUSH_DIR="${REPO_DIR}"
+  fi
+
+  if [[ -n "${PUSH_DIR}" ]] && git -C "${PUSH_DIR}" remote get-url origin >/dev/null 2>&1; then
+    echo ">>> git push origin (best-effort, from ${PUSH_DIR})"
+    if git -C "${PUSH_DIR}" push origin HEAD; then
       echo "push ok"
     else
       echo "push failed — findings are committed locally; investigate later"
