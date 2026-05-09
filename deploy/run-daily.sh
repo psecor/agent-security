@@ -52,6 +52,28 @@ cd "${SERVICE_DIR}"
   echo "=== agent-security daily run: $(date -Iseconds) ==="
   echo
 
+  # Pull the findings repo before scanning so multi-host setups (every host
+  # scans itself, all push into the same FINDINGS_DIR) see each other's
+  # commits and the local scan rebases on top of them rather than racing.
+  # Best-effort: if the pull fails (conflicts, no remote), keep going —
+  # scans are idempotent and the push step at the end will surface a real
+  # problem.
+  PULL_DIR=""
+  if [[ -n "${FINDINGS_DIR:-}" ]] && git -C "${FINDINGS_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    PULL_DIR="$(git -C "${FINDINGS_DIR}" rev-parse --show-toplevel)"
+  elif git -C "${REPO_DIR}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    PULL_DIR="${REPO_DIR}"
+  fi
+  if [[ -n "${PULL_DIR}" ]] && git -C "${PULL_DIR}" remote get-url origin >/dev/null 2>&1; then
+    echo ">>> git pull --rebase origin (best-effort, from ${PULL_DIR})"
+    if git -C "${PULL_DIR}" pull --rebase --autostash origin HEAD; then
+      echo "pull ok"
+    else
+      echo "pull failed — continuing; investigate before next run if this persists"
+    fi
+    echo
+  fi
+
   echo ">>> scanner run --all"
   /usr/bin/node dist/scanner/cli.js run --all
   echo

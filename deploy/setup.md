@@ -25,7 +25,12 @@ npm install && npm run build) && sudo systemctl restart agent-security`.
 ## Prerequisites
 
 - Node 20+ on the box.
-- `semgrep` on `PATH` (`pipx install semgrep` is the easiest install).
+- `semgrep` on `PATH` (`pipx install semgrep` is the easiest install) —
+  for project scans.
+- `trivy` on `PATH` — for host scans. Aqua's apt repo is the simplest
+  install on Debian/Ubuntu (instructions:
+  https://aquasecurity.github.io/trivy/latest/getting-started/installation/).
+  Skip if you don't intend to enable host scanning on this box.
 - Git configured so the bot can commit (the scanner sets the bot
   identity per-commit via `-c user.name=… -c user.email=…`, so no
   global config change is required).
@@ -75,6 +80,15 @@ Copy `service/.env.example` to `service/.env` and fill in:
 PROJECT_ROOTS=/path/to/your/projects
 LOC_THRESHOLD=200
 ANTHROPIC_API_KEY=<your key>
+
+# Optional: keep findings in a separate (often private) git repo.
+# Multi-host deployments require this — every host pushes into the
+# same FINDINGS_DIR clone, and the central UI reads from it too.
+# FINDINGS_DIR=/path/to/agent-security-private/findings
+
+# Optional: scan this host too (Trivy must be on PATH).
+# SCAN_HOST=true
+# HOST_NAME=                             # defaults to `os.hostname()`
 
 # Web service
 PORT=3046
@@ -168,10 +182,13 @@ systemctl --user start agent-security-scanner.service
 deploy/run-daily.sh
 ```
 
-If the agent-security repo has an `origin` remote configured, the
-script also pushes the bot commits at the end so the central findings
-rollup stays in sync off-host. The push is best-effort — a failed
-push does not fail the run.
+If the findings repo has an `origin` remote configured, the script
+both pulls before scanning and pushes after. The pull keeps
+multi-host setups consistent (every host scans itself and pushes
+its own `findings/hosts/<host>.json`; the pull catches any peers'
+work since the last run). Both steps are best-effort — failures are
+logged but do not fail the run, since scans are idempotent and the
+findings are already on disk locally either way.
 
 Edit the cadence by changing `OnCalendar=` in the `.timer` file and
 re-running `systemctl --user daemon-reload`.
@@ -200,6 +217,89 @@ npm run cli:built -- token revoke --name jira
 Use the token via `Authorization: Bearer <plaintext>` against any
 `/security/api/*` endpoint.
 
+## 8. Adding a peer host (host scans only)
+
+Sections 1–7 deploy a single box that runs the web UI, the scanner,
+and (optionally) scans itself. To add a second host that just
+contributes its own host-scan findings to the same dashboard, deploy
+only the scanner half on the peer.
+
+The model is "central host runs the UI, every host scans itself."
+Every host pushes its `findings/hosts/<host>.json` into a shared
+findings repo (`FINDINGS_DIR`), and the UI host reads everyone's
+findings from its local clone of that repo. There's no SSH-out, no
+agent-on-target — just N independent scanners writing into one git
+tree.
+
+Prerequisites on the peer:
+
+- Node 20+ and `git`.
+- `trivy` on `PATH`.
+- A clone of the **findings** repo on the peer (not the source repo —
+  this is the same repo your central host's `FINDINGS_DIR` points at,
+  cloned to a path local to the peer). The peer needs push access to
+  it, since `run-daily.sh` runs `git push` from this checkout.
+- A clone of the **agent-security** source repo on the peer, built
+  the same way as section 1 (`npm install && npm run build` in
+  `service/`). The web service is not needed — only `dist/scanner/`.
+
+`service/.env` on the peer (minimal — none of the OAuth, session, or
+ALLOWED_EMAILS bits matter on a scanner-only box):
+
+```env
+ANTHROPIC_API_KEY=<your key>
+
+# Where this peer pushes its host findings.
+FINDINGS_DIR=/path/on/this/peer/to/agent-security-private/findings
+
+# Enable host scan; pin a stable hostname so the file basename never
+# drifts (a different `uname -n` after a hostname change would create
+# a second hosts/<name>.json instead of overwriting the first).
+SCAN_HOST=true
+HOST_NAME=web-01
+
+# PROJECT_ROOTS can be empty if the peer doesn't host any projects.
+# The scanner is happy with `--all` finding zero projects, as long as
+# SCAN_HOST=true gives it something to do.
+PROJECT_ROOTS=
+```
+
+Drop the systemd units (same files used in section 6):
+
+```sh
+mkdir -p ~/.config/systemd/user
+cp deploy/agent-security-scanner.service \
+   deploy/agent-security-scanner.timer \
+   ~/.config/systemd/user/
+
+systemctl --user daemon-reload
+systemctl --user enable --now agent-security-scanner.timer
+sudo loginctl enable-linger "$USER"
+```
+
+Trigger the first run by hand to verify everything before waiting on
+the timer:
+
+```sh
+deploy/run-daily.sh
+```
+
+You should see Trivy run, Claude triage the critical/high CVEs, a
+new commit in the findings repo (`scan(host:web-01): … [triaged]`),
+and a successful `git push origin`. The next time the central UI
+host pulls the findings repo (next timer firing of its own
+scanner — `run-daily.sh` does the pull as part of the same loop),
+the new host will appear under `/security/hosts`.
+
+If two peers share the same hostname (e.g. both default to
+`ubuntu`), the second push will overwrite the first's findings file.
+Set `HOST_NAME` explicitly on every peer to avoid this — see Gotcha
+#16 in `AGENTS.md`.
+
+The central UI host doesn't need to know about the peer in advance;
+it'll simply start showing the new `findings/hosts/<peer>.json` once
+the file appears in the local clone.
+
 ## Troubleshooting
 
 - **"GOOGLE_CLIENT_ID is required in environment"** — `.env` not
@@ -212,6 +312,17 @@ Use the token via `Authorization: Bearer <plaintext>` against any
 - **Scanner reports `semgrep: command not found`** — install Semgrep
   on the box (`pipx install semgrep`) and confirm it's on the PATH the
   systemd user session sees (`systemctl --user show-environment`).
+- **Host scan errors with `trivy binary not found in PATH`** — install
+  Trivy from Aqua's apt repo (or your distro's equivalent) and confirm
+  it's on the systemd-user PATH. Same diagnosis path as the Semgrep
+  case.
+- **Host scan ran on a peer but UI shows no Hosts entry** — the
+  central UI host reads findings from its local clone of
+  `FINDINGS_DIR`. The findings file appears once the UI host pulls
+  the peer's commit; `run-daily.sh` does that automatically before
+  each scan, so a Hosts entry should appear by the next day's 03:30
+  firing at the latest. To see it sooner, run `git pull` in the
+  central host's findings clone manually.
 - **Scanner runs but commits nothing** — most projects under your
   `PROJECT_ROOTS` haven't changed by ≥ `LOC_THRESHOLD` since their
   last scan. Lower the threshold, or run with `--force` to ignore it.
