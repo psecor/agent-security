@@ -218,7 +218,7 @@ Findings JSON is now **schema v2**: a top-level `kind` discriminator (`"project"
 }
 ```
 
-**Host scan** — `findings/hosts/<host>.{json,md}` (writers landed; runner not yet wired into a CLI entry point):
+**Host scan** — `findings/hosts/<host>.{json,md}` (full CLI path, API, UI, and daily-timer fan-out all wired):
 
 ```json
 {
