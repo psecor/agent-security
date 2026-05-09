@@ -1,5 +1,6 @@
-// Data access for the server. Reads findings/<key>.json from FINDINGS_DIR
-// on demand. No in-memory cache for v1 — files are small, reads are cheap.
+// Data access for the server. Reads findings/projects/<key>.json from
+// FINDINGS_DIR on demand. No in-memory cache for v1 — files are small, reads
+// are cheap.
 //
 // Multi-root keys contain "/" in JSON but use "__" in file basenames (see
 // scanner/apply.ts → findingsPath). The URL :name param is the on-disk form
@@ -8,6 +9,7 @@
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
+import { PROJECT_FINDINGS_SUBDIR } from "../scanner/apply.js";
 import type { Finding, ScanOutput, Severity } from "../scanner/types.js";
 
 export interface ProjectSummary {
@@ -76,10 +78,12 @@ export interface DataLayerOptions {
 const DEFAULT_FINDINGS_LIMIT = 500;
 
 export function createDataLayer(opts: DataLayerOptions): DataLayer {
+  const projectsDir = join(opts.findingsDir, PROJECT_FINDINGS_SUBDIR);
+
   async function loadAll(): Promise<ScanOutput[]> {
     let entries: string[];
     try {
-      entries = await fs.readdir(opts.findingsDir);
+      entries = await fs.readdir(projectsDir);
     } catch {
       return [];
     }
@@ -87,7 +91,7 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
     for (const name of entries) {
       if (!name.endsWith(".json")) continue;
       try {
-        const raw = await fs.readFile(join(opts.findingsDir, name), "utf8");
+        const raw = await fs.readFile(join(projectsDir, name), "utf8");
         out.push(JSON.parse(raw) as ScanOutput);
       } catch {
         // Skip malformed/partially-written files — never block a request on a
@@ -125,7 +129,7 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       if (urlName.includes("/") || urlName.includes("..") || urlName.includes("\\")) {
         return null;
       }
-      const path = join(opts.findingsDir, `${urlName}.json`);
+      const path = join(projectsDir, `${urlName}.json`);
       try {
         const raw = await fs.readFile(path, "utf8");
         return JSON.parse(raw) as ScanOutput;
@@ -140,7 +144,7 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       }
       // Only return history for projects that actually have a findings file —
       // otherwise an attacker could probe `git log` with arbitrary basenames.
-      const jsonPath = join(opts.findingsDir, `${urlName}.json`);
+      const jsonPath = join(projectsDir, `${urlName}.json`);
       try {
         await fs.stat(jsonPath);
       } catch {
@@ -148,13 +152,18 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       }
       const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 200);
       // Track both .json and .md so milestone-1 commits (which only touched
-      // .json) still show, and any future md-only edit would too.
+      // .json) still show, and any future md-only edit would too. Paths are
+      // relative to the findings repo root (which is opts.findingsDir). The
+      // pre-v2 `<urlName>.{json,md}` paths are also listed so a `git mv`
+      // migration to projects/ doesn't break the timeline view.
       const args = [
         "log",
         `--max-count=${safeLimit}`,
         "--no-show-signature",
         "--format=%H%x09%cI%x09%s",
         "--",
+        `${PROJECT_FINDINGS_SUBDIR}/${urlName}.json`,
+        `${PROJECT_FINDINGS_SUBDIR}/${urlName}.md`,
         `${urlName}.json`,
         `${urlName}.md`,
       ];

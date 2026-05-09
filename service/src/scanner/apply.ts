@@ -1,14 +1,18 @@
-// JSON + Markdown writers for findings/<project>.{json,md}.
+// JSON + Markdown writers for findings/projects/<project>.{json,md}.
 
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import type { Finding, ScanOutput, Severity } from "./types.js";
 import { SEVERITY_ORDER } from "./types.js";
 
+// Subdirectory inside FINDINGS_DIR where project scan output lives.
+// Host scan output lives alongside this in `hosts/` — see spec/host-scanning.md.
+export const PROJECT_FINDINGS_SUBDIR = "projects";
+
 export function findingsPath(findingsDir: string, projectKey: string, ext: "json" | "md"): string {
   // Multi-root qualified keys contain "/"; flatten to "__" for the basename.
   const basename = projectKey.replace(/\//g, "__");
-  return join(findingsDir, `${basename}.${ext}`);
+  return join(findingsDir, PROJECT_FINDINGS_SUBDIR, `${basename}.${ext}`);
 }
 
 export function sortFindings(findings: Finding[]): Finding[] {
