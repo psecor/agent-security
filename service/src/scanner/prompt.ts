@@ -106,7 +106,7 @@ export function buildUserMessage(opts: {
     }
     lines.push("");
 
-    const slice = reader.slice(r.file, r.line, CONTEXT_BEFORE, CONTEXT_AFTER);
+    const slice = reader.slice(r.file ?? "", r.line ?? 0, CONTEXT_BEFORE, CONTEXT_AFTER);
     if (slice) {
       lines.push(`code (${r.file}, lines ${slice.start_line}-${slice.end_line}; the flagged line is ${r.line}):`);
       lines.push("```");

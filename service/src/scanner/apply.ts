@@ -22,9 +22,9 @@ export function sortFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => {
     const s = order[a.severity] - order[b.severity];
     if (s !== 0) return s;
-    const f = a.file.localeCompare(b.file);
+    const f = (a.file ?? "").localeCompare(b.file ?? "");
     if (f !== 0) return f;
-    return a.line - b.line;
+    return (a.line ?? 0) - (b.line ?? 0);
   });
 }
 
@@ -76,15 +76,17 @@ export function renderMarkdown(output: ScanOutput): string {
     lines.push("");
     for (const f of group) {
       lines.push(`### ${f.title}`);
-      const where = f.line_end && f.line_end !== f.line
-        ? `${f.file}:${f.line}-${f.line_end}`
-        : `${f.file}:${f.line}`;
-      lines.push(
-        `**File:** \`${where}\` &nbsp; ` +
-        `**Source:** \`${f.source}\` &nbsp; ` +
-        `**Rule:** \`${f.rule_id}\` &nbsp; ` +
-        `**Category:** \`${f.category}\``,
-      );
+      const meta: string[] = [];
+      if (f.file) {
+        const where = f.line_end && f.line_end !== f.line
+          ? `${f.file}:${f.line}-${f.line_end}`
+          : f.line !== undefined ? `${f.file}:${f.line}` : f.file;
+        meta.push(`**File:** \`${where}\``);
+      }
+      meta.push(`**Source:** \`${f.source}\``);
+      meta.push(`**Rule:** \`${f.rule_id}\``);
+      meta.push(`**Category:** \`${f.category}\``);
+      lines.push(meta.join(" &nbsp; "));
       lines.push("");
       if (f.rationale) {
         lines.push(f.rationale);

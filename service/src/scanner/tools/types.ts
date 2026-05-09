@@ -19,8 +19,12 @@ export interface RawFinding {
   source: string;
   rule_id: string;
   severity: string;
-  file: string;
-  line: number;
+  // Required for project findings; optional for host findings (a CVE attached
+  // to an installed package has no source line). Project tools (Semgrep,
+  // Gitleaks) always populate them; host tools (Trivy) leave them undefined
+  // and the host triage path keys IDs off the CVE + package + hostname instead.
+  file?: string;
+  line?: number;
   line_end?: number;
   message: string;
   links?: string[];

@@ -28,7 +28,9 @@ import type { ScanOutput, Severity } from "./types.js";
 import { SEVERITY_ORDER } from "./types.js";
 
 const SCANNER_VERSION = "0.1.0";
-const SCHEMA_VERSION = 1;
+// schema_version 2 (May 2026): added `kind` discriminator and split
+// findings/ into projects/ and hosts/ subdirs. See spec/findings-schema.md.
+const SCHEMA_VERSION = 2;
 
 export interface RunOptions {
   // Absolute path to the project's working tree.
@@ -127,6 +129,7 @@ export async function scanProject(opts: RunOptions): Promise<RunReport> {
 
     const output: ScanOutput = {
       project: projectKey,
+      kind: "project",
       root: opts.root,
       project_path: projectPath,
       scanner_version: SCANNER_VERSION,

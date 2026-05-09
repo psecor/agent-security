@@ -257,7 +257,7 @@ function severityThenLocation(a: FindingWithProject, b: FindingWithProject): num
   if (s !== 0) return s;
   const p = a.project.localeCompare(b.project);
   if (p !== 0) return p;
-  const f = a.file.localeCompare(b.file);
+  const f = (a.file ?? "").localeCompare(b.file ?? "");
   if (f !== 0) return f;
-  return a.line - b.line;
+  return (a.line ?? 0) - (b.line ?? 0);
 }

@@ -85,17 +85,23 @@ function truncate(s: string, max: number): string {
 }
 
 export function naiveTriage(raws: RawFinding[], reader: SourceReader): Finding[] {
+  // Project-scan triage path: every project-side runner (Semgrep, Gitleaks)
+  // populates file + line, so the ?? "" / ?? 0 fallbacks here are belt-and-
+  // suspenders to satisfy the now-optional RawFinding shape rather than a
+  // real expected case. Host findings go through a separate triage function.
   return raws.map((r): Finding => {
-    const lineContext = normalizedLineContext(reader, r.file, r.line);
-    const id = deriveId(r.rule_id, r.file, lineContext);
+    const file = r.file ?? "";
+    const line = r.line ?? 0;
+    const lineContext = normalizedLineContext(reader, file, line);
+    const id = deriveId(r.rule_id, file, lineContext);
     const title = truncate(r.message.replace(/\s+/g, " ").trim() || r.rule_id, 100);
     const finding: Finding = {
       id,
       severity: naiveMapSeverity(r.severity, r.source),
       category: "other",
       title,
-      file: r.file,
-      line: r.line,
+      file,
+      line,
       source: r.source,
       rule_id: r.rule_id,
       rationale: "",
@@ -134,16 +140,18 @@ function assembleFromClaude(
     // Canonical raw is the first listed index — its rule_id and file/line
     // anchor the id and the file:line shown in the report.
     const canonical = raws[validIndexes[0]!]!;
-    const lineContext = normalizedLineContext(reader, canonical.file, canonical.line);
-    const id = deriveId(canonical.rule_id, canonical.file, lineContext);
+    const file = canonical.file ?? "";
+    const line = canonical.line ?? 0;
+    const lineContext = normalizedLineContext(reader, file, line);
+    const id = deriveId(canonical.rule_id, file, lineContext);
 
     const finding: Finding = {
       id,
       severity: t.severity,
       category: t.category,
       title: t.title.replace(/\s+/g, " ").trim(),
-      file: canonical.file,
-      line: canonical.line,
+      file,
+      line,
       source: canonical.source,
       rule_id: canonical.rule_id,
       rationale: t.rationale.trim(),

@@ -9,17 +9,28 @@ export interface Finding {
   severity: Severity;
   category: string;
   title: string;
-  file: string;
-  line: number;
+  // Required for project findings; omitted for host findings (a CVE attached
+  // to an installed package has no source line). See spec/findings-schema.md.
+  file?: string;
+  line?: number;
   line_end?: number;
   source: string;
   rule_id: string;
   rationale: string;
   links?: string[];
+  // Host-finding-only fields (populated by CVE-matching tools like Trivy).
+  cve?: string;
+  package?: string;
+  installed_version?: string;
+  fixed_version?: string | null;
 }
 
 export interface ScanOutput {
   project: string;
+  // Discriminator from schema v2. Host scans use a separate top-level shape
+  // (HostScanOutput) — the field is here to make `kind: "project"` explicit
+  // on disk so a generic reader can distinguish without sniffing other fields.
+  kind: "project";
   root: string;
   project_path: string;
   scanner_version: string;
