@@ -32,6 +32,100 @@ export interface TriageResult {
   usage: TriageUsage | null;
 }
 
+export interface HostTriageInput {
+  raws: RawFinding[];
+  hostName: string;
+  log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
+  // When supplied, will be used in a future commit (task #43) to add a
+  // category-aware host triage prompt. v1 always falls back to naive host
+  // triage and ignores this — captured here so the orchestrator can plumb
+  // it through without a follow-up signature change.
+  claudeClient: Anthropic | null;
+}
+
+// Stable id for a host finding. Per spec/host-scanning.md → "Stable IDs",
+// host findings can't use the (rule_id, file, line-context) hash because
+// there's no source line; they hash (cve, package, hostname) instead, so
+// the same CVE on the same package on the same host is the same finding
+// across scans even if the package version bumps.
+export function deriveHostId(cve: string, pkgName: string, hostName: string): string {
+  const h = createHash("sha256");
+  h.update(cve);
+  h.update("\n");
+  h.update(pkgName);
+  h.update("\n");
+  h.update(hostName);
+  return "sha256:" + h.digest("hex");
+}
+
+// Trivy's tool-native severities map cleanly onto our vocabulary; no
+// project-specific surprises like Semgrep's ERROR/WARNING/INFO.
+function naiveMapHostSeverity(toolSeverity: string): Severity {
+  const s = toolSeverity.toUpperCase();
+  if (s === "CRITICAL") return "critical";
+  if (s === "HIGH") return "high";
+  if (s === "MEDIUM" || s === "MODERATE") return "medium";
+  if (s === "LOW") return "low";
+  return "info";
+}
+
+interface TrivyVulnerabilityShape {
+  PkgName?: string;
+  InstalledVersion?: string;
+  FixedVersion?: string;
+  Title?: string;
+  PrimaryURL?: string;
+}
+
+function readTrivy(raw: unknown): TrivyVulnerabilityShape {
+  if (!raw || typeof raw !== "object") return {};
+  return raw as TrivyVulnerabilityShape;
+}
+
+export function naiveHostTriage(raws: RawFinding[], hostName: string): Finding[] {
+  return raws.map((r): Finding => {
+    const tv = readTrivy(r.raw);
+    const pkgName = tv.PkgName ?? "unknown";
+    const installed = tv.InstalledVersion ?? "?";
+    const fixed = tv.FixedVersion;
+    const cve = r.rule_id;
+    const id = deriveHostId(cve, pkgName, hostName);
+    const baseTitle = (tv.Title ?? r.message).replace(/\s+/g, " ").trim() || cve;
+    const title = truncate(`${pkgName} ${installed}: ${baseTitle} (${cve})`, 100);
+
+    const finding: Finding = {
+      id,
+      severity: naiveMapHostSeverity(r.severity),
+      category: "package-cve",
+      title,
+      source: r.source,
+      rule_id: cve,
+      rationale: "",
+      cve,
+      package: pkgName,
+      installed_version: installed,
+      // null is meaningful per spec — "advisory has no patched version yet."
+      fixed_version: fixed && fixed.length > 0 ? fixed : null,
+    };
+    if (r.links && r.links.length > 0) finding.links = r.links;
+    return finding;
+  });
+}
+
+export async function triageHost(input: HostTriageInput): Promise<TriageResult> {
+  if (input.raws.length === 0) {
+    return { findings: [], triaged: false, usage: null };
+  }
+  // v1 host triage is always naive. Task #43 will add a category-aware
+  // Claude prompt that writes per-host rationale and dedup hints; until
+  // then, a triaged: false output with mechanical severity remap is enough
+  // to make the dashboard usable.
+  if (input.claudeClient) {
+    input.log("debug", "host triage: claudeClient provided but v1 only emits naive output; ignoring (see task #43)");
+  }
+  return { findings: naiveHostTriage(input.raws, input.hostName), triaged: false, usage: null };
+}
+
 export async function triage(input: TriageInput): Promise<TriageResult> {
   const reader = new SourceReader(input.projectPath);
   if (input.raws.length === 0) {
