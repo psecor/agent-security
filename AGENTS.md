@@ -1,7 +1,7 @@
 ---
 project: agent-security
 status: in-progress
-status_description: "Open-sourced and in production for project scans (Semgrep + Gitleaks, Claude triage, Express + OAuth + bearer API on :3046, React UI at /security/, daily systemd timer); host-scanning scaffolding has begun landing as a peer — schema v2 with kind discriminator + CVE fields, HostToolRunner interface, bundled Trivy runner, and host output writers — with CLI/timer/UI wiring still ahead (see spec/host-scanning.md)."
+status_description: "Open-sourced and in production for project scans (Semgrep + Gitleaks, Claude triage, Express + OAuth + bearer API on :3046, React UI at /security/, daily systemd timer); host-scanning is now CLI-invokable end-to-end (schema v2, HostToolRunner + bundled Trivy, gather → select → orchestrator → naive triage → findings/hosts/) with API/UI surface and per-host timer wiring still ahead (see spec/host-scanning.md)."
 last_updated: 2026-05-09
 last_updated_by:
   - agent:claude-opus-4-7
@@ -59,12 +59,12 @@ agent-security/
 ├── spec/
 │   ├── findings-schema.md     JSON shape (v2: `kind` discriminator, optional CVE fields), severities, categories
 │   ├── tools.md               ToolRunner + HostToolRunner interfaces; how to register extras
-│   └── host-scanning.md       scoping doc for host scans as a peer to project scans (scaffolding partially landed; runner not yet wired into CLI/timer)
+│   └── host-scanning.md       scoping doc for host scans as a peer to project scans (CLI path now wired; UI surface + per-host timer still pending)
 ├── findings/                  default findings dir (override with FINDINGS_DIR)
 │   ├── .gitkeep               keeps the directory in fresh clones; real findings
 │   │                          typically live in a separate repo pointed to by FINDINGS_DIR
 │   ├── projects/              per-project scan output (`<project>.{json,md}`)
-│   └── hosts/                 (planned) per-host scan output (`<host>.{json,md}`); writers exist, fan-out not yet wired
+│   └── hosts/                 per-host scan output (`<host>.{json,md}`); writers + CLI wired, daily-timer fan-out + UI surface still pending
 ├── service/
 │   ├── package.json
 │   ├── tsconfig.json
@@ -73,17 +73,20 @@ agent-security/
 │       ├── cli/
 │       │   └── index.ts       admin CLI: `token create|list|revoke`
 │       ├── scanner/
-│       │   ├── cli.ts         run | run --project | --all | --dry-run | --force
+│       │   ├── cli.ts         run | run --project | --all | --host | --dry-run | --force
 │       │   ├── run.ts         orchestrates one project's scan
+│       │   ├── run-host.ts    orchestrates one host's scan (gather → tools → triage → write)
+│       │   ├── host-info.ts   gathers host identity: uname + /etc/os-release + dpkg-query
+│       │   ├── select-host.ts host selector: package-set sha + 24h daily floor
 │       │   ├── tools/
 │       │   │   ├── types.ts        ToolRunner interface + RawFinding shape
 │       │   │   ├── host-types.ts   HostToolRunner interface + host RawFinding shape
 │       │   │   ├── semgrep.ts      bundled: working-tree static analysis
 │       │   │   ├── gitleaks.ts     bundled: full-history secret detection
-│       │   │   └── trivy.ts        bundled host-tool: package + CVE scan (not yet wired into a host CLI entry)
+│       │   │   └── trivy.ts        bundled host-tool: package + CVE scan
 │       │   ├── prompt.ts      security-analyst prompt + tool-output assembly
 │       │   ├── claude.ts      Anthropic API wrapper
-│       │   ├── triage.ts      runs Claude over RawFindings → Finding[] (project + host shapes)
+│       │   ├── triage.ts      runs Claude over RawFindings → Finding[] (project + host shapes; host triage is naive in v1)
 │       │   ├── source.ts      reads source slices around finding lines for the prompt
 │       │   ├── apply.ts       writes findings/{projects,hosts}/<name>.{json,md} + commits
 │       │   ├── git.ts         per-project diff stats, sha, commit-on-write
@@ -96,7 +99,7 @@ agent-security/
 │           ├── auth.ts        Passport OAuth (humans) + bearer middleware (machines)
 │           ├── tokens.ts      mint / verify; hashed at rest in api-tokens.json
 │           ├── api.ts         JSON endpoints under /security/api
-│           └── data.ts        reads findings/projects/*.json (host reads pending UI surface)
+│           └── data.ts        reads findings/projects/*.json (filters by kind === "project"; host reads pending UI surface)
 ├── ui/                        React + Vite SPA, served by backend at /security/
 │   ├── index.html
 │   ├── package.json
@@ -124,7 +127,7 @@ agent-security/
     └── setup.md                         install walkthrough
 ```
 
-Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` owns the Claude pass over `RawFinding[]` and now handles both project and host scan shapes; `source.ts` reads the source-window slices that get embedded in the prompt. `prompt.ts` assembles, `claude.ts` is just the API wrapper. The admin CLI lives at `service/src/cli/index.ts` (separate from the scanner CLI) and is the entry point for token management. Project findings live under `findings/projects/`; `findings/hosts/` is the planned peer for host scans (writers exist in `apply.ts`, but no end-to-end CLI/timer wiring yet) — see `spec/host-scanning.md`. Both `service/src/scanner/host-types.ts` (output schema) and `service/src/scanner/tools/host-types.ts` (runner interface) exist by design: one defines what a host scan *produces*, the other defines what a host *tool runner* must implement, mirroring the project-side `types.ts` / `tools/types.ts` split.
+Note: `triage.ts` and `source.ts` weren't in the original sketch. `triage.ts` owns the Claude pass over `RawFinding[]` and now handles both project and host scan shapes (host triage is naive-only in v1; category-aware host prompt is task #43); `source.ts` reads the source-window slices that get embedded in the prompt. `prompt.ts` assembles, `claude.ts` is just the API wrapper. The admin CLI lives at `service/src/cli/index.ts` (separate from the scanner CLI) and is the entry point for token management. Project findings live under `findings/projects/`; `findings/hosts/` is the peer for host scans — writers in `apply.ts` and the full CLI path (`host-info.ts` → `select-host.ts` → `run-host.ts`) are wired, but daily-timer fan-out and the API/UI surface are still pending (see `spec/host-scanning.md`). Both `service/src/scanner/host-types.ts` (output schema) and `service/src/scanner/tools/host-types.ts` (runner interface) exist by design: one defines what a host scan *produces*, the other defines what a host *tool runner* must implement, mirroring the project-side `types.ts` / `tools/types.ts` split.
 
 ## Architecture
 
@@ -141,10 +144,11 @@ Manual CLI ───────▶│      run ToolRunners (semgrep + gitleaks 
                    │      write findings/projects/<project>.{json,md} │
                    │      git add + commit (bot identity) + push      │
                    │                                                  │
-                   │  (planned, scaffolding landed) for each host:    │
-                   │      run HostToolRunners (trivy + …)             │
+Manual CLI ───────▶│  --host: gather host info → select-host →        │
+(--all + SCAN_HOST)│      run HostToolRunners (trivy + …)             │
                    │      → RawFindings[] (with optional CVE fields)  │
-                   │      Claude triage → Finding[] (kind: "host")    │
+                   │      naive triage (Claude prompt update pending) │
+                   │      → Finding[] (kind: "host")                  │
                    │      write findings/hosts/<host>.{json,md}       │
                    └──────────────────────────────────────────────────┘
                                     │
@@ -153,7 +157,7 @@ Manual CLI ───────▶│      run ToolRunners (semgrep + gitleaks 
                                     ▼
 Browser ──https──▶ Apache (:443, /security/*) ──http──▶ Express (:3046, /security/*)
 Jira/scripts ─────Bearer token───────────────────────▶  ├── /security/auth/*  Passport (Google OAuth, allowlist)
-                                                        ├── /security/api/*   JSON (projects, findings, health)
+                                                        ├── /security/api/*   JSON (projects, findings, health; hosts pending)
                                                         └── /security/*       SPA from ui/dist
 ```
 
@@ -163,9 +167,9 @@ Jira/scripts ─────Bearer token─────────────�
 
 **Trade-off: hybrid (Semgrep + Claude) vs. pure-LLM scanning** — chose hybrid. Semgrep gives deterministic, reproducible findings tied to named rules with known precision/recall, runs locally for free, and covers all the languages in the workspace. Pure-LLM scans are noisy, expensive, and unstable across runs. Claude's job is triage and contextual prioritization, not pattern detection.
 
-**Trade-off: bundled tools vs. config-driven registry** — chose "two bundled, hardcoded for now" on the project side, with a third (Trivy) bundled on the nascent host side. Semgrep covers working-tree static analysis; Gitleaks covers full-history secret detection — the two cheap-to-run, high-signal axes worth running on every project. Trivy will play the same role for hosts (package + CVE scan). A YAML registry that loads user-configured extras was sketched in `spec/tools.md` but deferred: with a small handful of bundled tools and zero outside contributors, the indirection has no users to fit. Adding a fourth (e.g. `bandit`, `npm audit`) is one TS file plus a one-line append to `REGISTERED_TOOLS` in `run.ts`. Each tool's output is normalized to the common `RawFinding` shape before triage.
+**Trade-off: bundled tools vs. config-driven registry** — chose "two bundled, hardcoded for now" on the project side, with Trivy bundled on the host side. Semgrep covers working-tree static analysis; Gitleaks covers full-history secret detection — the two cheap-to-run, high-signal axes worth running on every project. Trivy plays the same role for hosts (package + CVE scan). A YAML registry that loads user-configured extras was sketched in `spec/tools.md` but deferred: with a small handful of bundled tools and zero outside contributors, the indirection has no users to fit. Adding a fourth (e.g. `bandit`, `npm audit`) is one TS file plus a one-line append to `REGISTERED_TOOLS` in `run.ts`. Each tool's output is normalized to the common `RawFinding` shape before triage.
 
-**Trade-off: shared output type vs. parallel project/host hierarchies** — chose a shared envelope with a `kind: "project" | "host"` discriminator (schema v2) plus parallel `ToolRunner` / `HostToolRunner` interfaces. The discriminator lets one Claude triage path and one writer pipeline serve both modes (with optional CVE fields on findings for the host case), while two runner interfaces keep the *inputs* honest: project tools take a working tree + git history, host tools take a host identity + a way to reach it. Mashing both into one runner interface would have produced an awkward union of "this argument is sometimes set" parameters.
+**Trade-off: shared output type vs. parallel project/host hierarchies** — chose a shared envelope with a `kind: "project" | "host"` discriminator (schema v2) plus parallel `ToolRunner` / `HostToolRunner` interfaces. The discriminator lets one writer pipeline serve both modes (with optional CVE fields on findings for the host case), while two runner interfaces keep the *inputs* honest: project tools take a working tree + git history, host tools take a host identity + a way to reach it. Mashing both into one runner interface would have produced an awkward union of "this argument is sometimes set" parameters. Triage diverged in v1: project scans go through Claude, host scans use a naive pass-through (the category-aware host prompt is task #43).
 
 **Trade-off: report-only vs. propose-patches in v1** — chose report-only. Patch generation needs branch hygiene, signing, and a review loop that's worth its own iteration. Findings-first lets us learn what the noise floor looks like before automating fixes.
 
@@ -290,6 +294,8 @@ npm run scanner -- run --project rssreader              # scan one project, writ
 npm run scanner -- run --project foo --dry-run          # show diff without writing or committing
 npm run scanner -- run --project foo --force            # ignore selector
 npm run scanner -- run --all                            # selector decides which projects qualify
+npm run scanner -- run --host                           # scan the local host (gather → trivy → triage → write findings/hosts/<host>.{json,md})
+SCAN_HOST=true npm run scanner -- run --all             # opt host scan into the --all fan-out (selector: package-set sha + 24h floor)
 ```
 
 **Admin CLI** (`service/src/cli/index.ts`):
@@ -300,7 +306,7 @@ npm run cli -- token list                               # list tokens by name + 
 npm run cli -- token revoke --name jira                 # remove a token
 ```
 
-**Production deploy:** mirrors agent-wiki. `deploy/agent-security.service` runs the compiled web process (`node dist/server/index.js`) on `127.0.0.1:3046` under a hardened systemd unit (`ProtectHome=read-only`, `ReadWritePaths` for `service/.sessions`). The committed unit ships with `/opt/agent-security/...` placeholders — edit `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ReadWritePaths` to match your install before `sudo cp`-ing into `/etc/systemd/system/`. The Apache splice in `deploy/apache.conf` proxies `/security` — add it inside your existing HTTPS `*:443` vhost. Daily fan-out is `deploy/agent-security-scanner.timer` (03:30 local, offset from agent-wiki's 03:00) firing `agent-security-scanner.service` (user-mode oneshot) which runs `deploy/run-daily.sh`: that script loads `service/.env`, runs `node dist/scanner/cli.js run --all`, then best-effort `git push origin` from the repo that owns `FINDINGS_DIR` (which may be a different repo than the agent-security code repo). Output is tee'd to `~/.local/state/agent-security/last-run.log`. Full step-by-step in `deploy/setup.md`.
+**Production deploy:** mirrors agent-wiki. `deploy/agent-security.service` runs the compiled web process (`node dist/server/index.js`) on `127.0.0.1:3046` under a hardened systemd unit (`ProtectHome=read-only`, `ReadWritePaths` for `service/.sessions`). The committed unit ships with `/opt/agent-security/...` placeholders — edit `User`, `Group`, `WorkingDirectory`, `EnvironmentFile`, and `ReadWritePaths` to match your install before `sudo cp`-ing into `/etc/systemd/system/`. The Apache splice in `deploy/apache.conf` proxies `/security` — add it inside your existing HTTPS `*:443` vhost. Daily fan-out is `deploy/agent-security-scanner.timer` (03:30 local, offset from agent-wiki's 03:00) firing `agent-security-scanner.service` (user-mode oneshot) which runs `deploy/run-daily.sh`: that script loads `service/.env`, runs `node dist/scanner/cli.js run --all`, then best-effort `git push origin` from the repo that owns `FINDINGS_DIR` (which may be a different repo than the agent-security code repo). Output is tee'd to `~/.local/state/agent-security/last-run.log`. Host scans are not yet rolled into the daily timer — `SCAN_HOST=true` in the env would route them through `--all`, but a per-host timer walkthrough (task #45) hasn't shipped. Full step-by-step in `deploy/setup.md`.
 
 ## Observability & Maintenance
 
@@ -348,11 +354,15 @@ A Jira / ticketing integration looks like: scheduled job hits `/security/api/fin
 
 9. **`FINDINGS_DIR` may be a different repo than the code** — the open-source code repo ships an empty `findings/` (just `.gitkeep`), and a real deployment typically points `FINDINGS_DIR` at a separate (often private) git repo. `run-daily.sh` runs its `git add`/`commit`/`push` from whichever repo owns `FINDINGS_DIR`, *not* from the code repo. Consequence: bot commits and the scan-history view both come from the findings repo, so `git log findings/projects/<project>.json` is meaningful only there. If `FINDINGS_DIR` is set to a directory that isn't a git repo, the scanner still writes files but no history accrues.
 
-10. **Project findings live under `findings/projects/`, not flat `findings/`** — recent rework moved per-project output into a `projects/` subdirectory so a future host-scanning peer (`findings/hosts/`, scoped in `spec/host-scanning.md`) can sit alongside without colliding with a project literally named `hosts`. Anything that globs `findings/*.json` (old scripts, ad-hoc tooling, external integrations) needs to be updated to `findings/projects/*.json`.
+10. **Project findings live under `findings/projects/`, not flat `findings/`** — recent rework moved per-project output into a `projects/` subdirectory so the host-scanning peer (`findings/hosts/`, scoped in `spec/host-scanning.md`) can sit alongside without colliding with a project literally named `hosts`. Anything that globs `findings/*.json` (old scripts, ad-hoc tooling, external integrations) needs to be updated to `findings/projects/*.json`.
 
 11. **Findings JSON is now schema v2 with a `kind` discriminator** — every output file carries `kind: "project" | "host"` and `schema_version: 2`, and host findings can carry CVE fields (`cve`, `cvss`, `fixed_version`, `package`, `installed_version`) that project findings don't have. Anything reading the JSON should branch on `kind` before assuming project-shaped fields like `file`/`line` exist; `service/src/server/data.ts` filters by `kind === "project"` for the existing API surface. Older v1 files (no `kind`, no `schema_version`) should be treated as `kind: "project"` for back-compat — the writers always emit v2 going forward, so a single re-scan migrates a file in place.
 
 12. **Two host-side type files, by design** — `service/src/scanner/host-types.ts` defines what a host scan *produces* (output envelope, host finding shape), while `service/src/scanner/tools/host-types.ts` defines the `HostToolRunner` interface that bundled host tools (Trivy, future) must implement. They mirror the project-side `types.ts` / `tools/types.ts` split. Don't merge them — the symmetry is what keeps the runner contract from leaking output-format concerns and vice versa.
+
+13. **Host triage is naive in v1, not Claude-routed** — project findings go through `triage.ts`'s Claude pass; host findings currently fall through a pass-through that maps tool-native severity directly onto the `Finding` shape with no contextual rationale. That's deliberate (task #43 is the category-aware host prompt) but means severity counts in `findings/hosts/<host>.json` reflect Trivy's CVSS bands, not a calibrated review. Don't be surprised when `rationale` strings on host findings are thin or templated.
+
+14. **Host scans are CLI-only today** — `--host` and `SCAN_HOST=true ... --all` write `findings/hosts/<host>.{json,md}` and commit, but nothing on the API/UI side surfaces them yet (`server/data.ts` filters by `kind === "project"`), and the daily timer doesn't fan host scans out by default. If you run a host scan, expect to see commits in the findings repo but nothing in the `/security` UI until tasks #44/#45 land.
 
 ## Related
 

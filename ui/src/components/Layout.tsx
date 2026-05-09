@@ -14,6 +14,7 @@ export function Layout({ user, onLogout, children }: Props): JSX.Element {
         <Link to="/" className="brand">agent-security</Link>
         <nav className="navlinks">
           <Link to="/">Projects</Link>
+          <Link to="/hosts">Hosts</Link>
           <Link to="/findings">Findings</Link>
         </nav>
         <div className="user">

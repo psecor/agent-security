@@ -58,6 +58,59 @@ export function apiRoutes(deps: { data: DataLayer; tokens: TokenStore }): expres
     }
   });
 
+  r.get("/api/hosts", async (_req, res, next) => {
+    try {
+      res.json(await deps.data.hosts());
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get("/api/hosts/:name", async (req, res, next) => {
+    try {
+      const severity = parseList(req.query.severity).filter((s): s is Severity =>
+        VALID_SEVERITIES.has(s as Severity),
+      );
+      const category = parseList(req.query.category);
+      const pkg = typeof req.query.pkg === "string" ? req.query.pkg : undefined;
+      const offsetRaw = typeof req.query.offset === "string" ? parseInt(req.query.offset, 10) : NaN;
+      const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : NaN;
+      const offset = Number.isFinite(offsetRaw) && offsetRaw >= 0 ? offsetRaw : undefined;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : undefined;
+
+      const filter: Parameters<typeof deps.data.host>[1] = {};
+      if (severity.length) filter.severity = severity;
+      if (category.length) filter.category = category;
+      if (pkg && pkg.length > 0) filter.pkg = pkg;
+      if (offset !== undefined) filter.offset = offset;
+      if (limit !== undefined) filter.limit = limit;
+
+      const result = await deps.data.host(req.params.name, filter);
+      if (!result) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
+  r.get("/api/hosts/:name/history", async (req, res, next) => {
+    try {
+      const limitRaw = typeof req.query.limit === "string" ? parseInt(req.query.limit, 10) : NaN;
+      const limit = Number.isFinite(limitRaw) && limitRaw > 0 ? limitRaw : 50;
+      const result = await deps.data.hostHistory(req.params.name, limit);
+      if (!result) {
+        res.status(404).json({ error: "not_found" });
+        return;
+      }
+      res.json(result);
+    } catch (e) {
+      next(e);
+    }
+  });
+
   r.get("/api/findings", async (req, res, next) => {
     try {
       const severity = parseList(req.query.severity).filter((s): s is Severity =>

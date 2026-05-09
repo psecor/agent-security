@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { Navigate, Route, Routes } from "react-router-dom";
 import { Layout } from "./components/Layout.tsx";
 import { Home } from "./pages/Home.tsx";
+import { Hosts } from "./pages/Hosts.tsx";
+import { Host } from "./pages/Host.tsx";
 import { Login } from "./pages/Login.tsx";
 import { Project } from "./pages/Project.tsx";
 import { Findings } from "./pages/Findings.tsx";
@@ -45,6 +47,8 @@ export function App(): JSX.Element {
       <Routes>
         <Route path="/" element={<Home />} />
         <Route path="/projects/:name" element={<Project />} />
+        <Route path="/hosts" element={<Hosts />} />
+        <Route path="/hosts/:name" element={<Host />} />
         <Route path="/findings" element={<Findings />} />
         <Route path="/login" element={<Navigate to="/" replace />} />
         <Route path="*" element={<NotFound />} />

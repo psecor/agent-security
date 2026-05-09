@@ -1,15 +1,17 @@
-// Data access for the server. Reads findings/projects/<key>.json from
-// FINDINGS_DIR on demand. No in-memory cache for v1 — files are small, reads
-// are cheap.
+// Data access for the server. Reads findings/{projects,hosts}/<key>.json
+// from FINDINGS_DIR on demand. No in-memory cache for v1 — files are small,
+// reads are cheap.
 //
-// Multi-root keys contain "/" in JSON but use "__" in file basenames (see
-// scanner/apply.ts → findingsPath). The URL :name param is the on-disk form
-// (with "__"); the JSON shows the canonical projectKey.
+// Multi-root project keys contain "/" in JSON but use "__" in file basenames
+// (see scanner/apply.ts → findingsPath). The URL :name param is the on-disk
+// form (with "__"); the JSON shows the canonical projectKey. Hostnames don't
+// have multi-root collisions, so the on-disk and url names match 1:1.
 
 import { spawn } from "node:child_process";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
-import { PROJECT_FINDINGS_SUBDIR } from "../scanner/apply.js";
+import { HOST_FINDINGS_SUBDIR, PROJECT_FINDINGS_SUBDIR } from "../scanner/apply.js";
+import type { HostScanOutput, OsRelease } from "../scanner/host-types.js";
 import type { Finding, ScanOutput, Severity } from "../scanner/types.js";
 
 export interface ProjectSummary {
@@ -64,11 +66,85 @@ export interface HistoryResponse {
   history: HistoryEntry[];
 }
 
+// Host history entry. Mirrors HistoryEntry but with package_sha instead of
+// project_sha — the bot subject for host scans uses the package-set SHA as
+// its "did anything change" anchor (see scanner/run-host.ts → maybeCommitHost).
+export interface HostHistoryEntry {
+  commit: string;
+  date: string;
+  package_sha: string | null;
+  summary: string | null;
+  triaged: boolean | null;
+  raw_subject: string;
+}
+
+export interface HostHistoryResponse {
+  history: HostHistoryEntry[];
+}
+
+// Mirrors ProjectSummary but for hosts. Distinct shape rather than a
+// discriminated union because nearly every field is named differently and
+// the UI's hosts list and projects list aren't going to share rendering.
+export interface HostSummary {
+  host: string;                  // matches the file basename and url :name
+  os_pretty_name: string;        // os_release.pretty_name, surfaced for the table
+  kernel_version: string;
+  triaged: boolean;
+  last_scanned: string;
+  package_count: number;
+  package_set_sha: string;
+  counts: Record<Severity, number>;
+  findings_total: number;
+}
+
+export interface HostsList {
+  hosts: HostSummary[];
+}
+
+export interface HostDetailFilter {
+  severity?: Severity[];
+  category?: string[];
+  // Substring match on Finding.package — useful for "show me all openssl
+  // CVEs" once a host's findings number in the thousands.
+  pkg?: string;
+  offset?: number;
+  limit?: number;
+}
+
+// Host detail response: full envelope (metadata + total counts) plus a
+// paginated/filtered slice of findings. `findings_total` and `counts` always
+// reflect the unfiltered file so the UI's severity pills can show the full
+// picture even when the page is filtered to severity=high.
+export interface HostDetailResponse {
+  host: string;
+  kind: "host";
+  os_release: OsRelease;
+  hostname_kernel: string;
+  kernel_version: string;
+  architecture: string;
+  scanner_version: string;
+  schema_version: number;
+  triaged: boolean;
+  last_scanned: string;
+  package_count: number;
+  package_set_sha: string;
+  package_set_changed_since_previous: boolean | null;
+  tools_run: HostScanOutput["tools_run"];
+  tools_failed: HostScanOutput["tools_failed"];
+  counts: Record<Severity, number>;
+  findings_total: number;
+  findings: Finding[];
+  page: { offset: number; limit: number; matched: number; truncated: boolean };
+}
+
 export interface DataLayer {
   projects(): Promise<ProjectsList>;
   project(urlName: string): Promise<ScanOutput | null>;
   findings(filter: FindingsFilter): Promise<FindingsRollup>;
   history(urlName: string, limit: number): Promise<HistoryResponse | null>;
+  hosts(): Promise<HostsList>;
+  host(urlName: string, filter: HostDetailFilter): Promise<HostDetailResponse | null>;
+  hostHistory(urlName: string, limit: number): Promise<HostHistoryResponse | null>;
 }
 
 export interface DataLayerOptions {
@@ -76,9 +152,24 @@ export interface DataLayerOptions {
 }
 
 const DEFAULT_FINDINGS_LIMIT = 500;
+// Smaller default than the cross-project rollup — the UI fetches one page at
+// a time and a workstation host can produce >10k mediums.
+const DEFAULT_HOST_FINDINGS_LIMIT = 100;
+const MAX_HOST_FINDINGS_LIMIT = 2000;
+
+// Reject anything that could escape findingsDir. Host names are written by
+// the scanner from `os.hostname()` / HOST_NAME, so realistic values are
+// hostname-shaped; this is a defense-in-depth check on the URL :name param.
+function isSafeBasename(name: string): boolean {
+  if (name.length === 0) return false;
+  if (name.includes("/") || name.includes("\\")) return false;
+  if (name.includes("..")) return false;
+  return true;
+}
 
 export function createDataLayer(opts: DataLayerOptions): DataLayer {
   const projectsDir = join(opts.findingsDir, PROJECT_FINDINGS_SUBDIR);
+  const hostsDir = join(opts.findingsDir, HOST_FINDINGS_SUBDIR);
 
   async function loadAll(): Promise<ScanOutput[]> {
     let entries: string[];
@@ -96,6 +187,31 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
       } catch {
         // Skip malformed/partially-written files — never block a request on a
         // bad row. The next scan will overwrite them.
+      }
+    }
+    return out;
+  }
+
+  async function loadAllHosts(): Promise<HostScanOutput[]> {
+    let entries: string[];
+    try {
+      entries = await fs.readdir(hostsDir);
+    } catch {
+      return [];
+    }
+    const out: HostScanOutput[] = [];
+    for (const name of entries) {
+      if (!name.endsWith(".json")) continue;
+      try {
+        const raw = await fs.readFile(join(hostsDir, name), "utf8");
+        const parsed = JSON.parse(raw) as HostScanOutput;
+        // Defense in depth: a project file accidentally dropped into
+        // hosts/ should not be served as a host. Same for a v1 file
+        // missing the discriminator entirely.
+        if (parsed.kind !== "host") continue;
+        out.push(parsed);
+      } catch {
+        // Same skip-on-malformed policy as loadAll().
       }
     }
     return out;
@@ -216,7 +332,145 @@ export function createDataLayer(opts: DataLayerOptions): DataLayer {
         count: matched.length,
       };
     },
+
+    async hosts(): Promise<HostsList> {
+      const all = await loadAllHosts();
+      const hosts: HostSummary[] = all.map((h) => ({
+        host: h.host,
+        os_pretty_name: h.os_release.pretty_name,
+        kernel_version: h.kernel_version,
+        triaged: h.triaged,
+        last_scanned: h.last_scanned,
+        package_count: h.package_count,
+        package_set_sha: h.package_set_sha,
+        counts: h.counts,
+        findings_total: h.findings.length,
+      }));
+      hosts.sort((a, b) => a.host.localeCompare(b.host));
+      return { hosts };
+    },
+
+    async host(urlName: string, filter: HostDetailFilter): Promise<HostDetailResponse | null> {
+      if (!isSafeBasename(urlName)) return null;
+      const path = join(hostsDir, `${urlName}.json`);
+      let raw: string;
+      try {
+        raw = await fs.readFile(path, "utf8");
+      } catch {
+        return null;
+      }
+      let parsed: HostScanOutput;
+      try {
+        parsed = JSON.parse(raw) as HostScanOutput;
+      } catch {
+        return null;
+      }
+      if (parsed.kind !== "host") return null;
+
+      const sevSet = filter.severity ? new Set(filter.severity) : null;
+      const catSet = filter.category ? new Set(filter.category) : null;
+      const pkgQ = filter.pkg ? filter.pkg.toLowerCase() : null;
+
+      const matched: Finding[] = [];
+      for (const f of parsed.findings) {
+        if (sevSet && !sevSet.has(f.severity)) continue;
+        if (catSet && !catSet.has(f.category)) continue;
+        if (pkgQ) {
+          const pkg = (f.package ?? "").toLowerCase();
+          if (!pkg.includes(pkgQ)) continue;
+        }
+        matched.push(f);
+      }
+
+      // Findings are already severity-sorted by sortFindings in the writer,
+      // so ordering is stable across pages without re-sorting here.
+      const offset = Math.max(0, Math.floor(filter.offset ?? 0));
+      const requestedLimit = filter.limit ?? DEFAULT_HOST_FINDINGS_LIMIT;
+      const limit = Math.min(Math.max(1, Math.floor(requestedLimit)), MAX_HOST_FINDINGS_LIMIT);
+      const slice = matched.slice(offset, offset + limit);
+      const truncated = offset + slice.length < matched.length;
+
+      return {
+        host: parsed.host,
+        kind: "host",
+        os_release: parsed.os_release,
+        hostname_kernel: parsed.hostname_kernel,
+        kernel_version: parsed.kernel_version,
+        architecture: parsed.architecture,
+        scanner_version: parsed.scanner_version,
+        schema_version: parsed.schema_version,
+        triaged: parsed.triaged,
+        last_scanned: parsed.last_scanned,
+        package_count: parsed.package_count,
+        package_set_sha: parsed.package_set_sha,
+        package_set_changed_since_previous: parsed.package_set_changed_since_previous,
+        tools_run: parsed.tools_run,
+        tools_failed: parsed.tools_failed,
+        counts: parsed.counts,
+        findings_total: parsed.findings.length,
+        findings: slice,
+        page: { offset, limit, matched: matched.length, truncated },
+      };
+    },
+
+    async hostHistory(urlName: string, limit: number): Promise<HostHistoryResponse | null> {
+      if (!isSafeBasename(urlName)) return null;
+      // Same probe-prevention as project history: only return git log for
+      // hosts that actually have a findings file on disk.
+      const jsonPath = join(hostsDir, `${urlName}.json`);
+      try {
+        await fs.stat(jsonPath);
+      } catch {
+        return null;
+      }
+      const safeLimit = Math.min(Math.max(1, Math.floor(limit)), 200);
+      const args = [
+        "log",
+        `--max-count=${safeLimit}`,
+        "--no-show-signature",
+        "--format=%H%x09%cI%x09%s",
+        "--",
+        `${HOST_FINDINGS_SUBDIR}/${urlName}.json`,
+        `${HOST_FINDINGS_SUBDIR}/${urlName}.md`,
+      ];
+      let stdout: string;
+      try {
+        stdout = await runGit(args, opts.findingsDir);
+      } catch {
+        return { history: [] };
+      }
+      const history: HostHistoryEntry[] = [];
+      for (const line of stdout.split("\n")) {
+        if (!line) continue;
+        const tab1 = line.indexOf("\t");
+        const tab2 = tab1 < 0 ? -1 : line.indexOf("\t", tab1 + 1);
+        if (tab1 < 0 || tab2 < 0) continue;
+        const commit = line.slice(0, tab1);
+        const date = line.slice(tab1 + 1, tab2);
+        const subject = line.slice(tab2 + 1);
+        history.push({ commit, date, ...parseHostScanSubject(subject), raw_subject: subject });
+      }
+      return { history };
+    },
   };
+}
+
+// Matches the host bot subject from scanner/run-host.ts → maybeCommitHost:
+//   scan(host:<name>): <totals> @ <pkg-sha-7> [triaged|untriaged]
+// The shape happens to match the project regex (which allows "host:" inside
+// the parens), but a dedicated parser keeps the field naming honest:
+// `package_sha` not `project_sha`.
+const HOST_SCAN_SUBJECT_RE = /^scan\(host:[^)]+\): (.+) @ ([a-f0-9]+|no-pkg-sha) \[(triaged|untriaged)\]$/;
+
+function parseHostScanSubject(subject: string): {
+  package_sha: string | null;
+  summary: string | null;
+  triaged: boolean | null;
+} {
+  const m = HOST_SCAN_SUBJECT_RE.exec(subject);
+  if (!m) return { package_sha: null, summary: null, triaged: null };
+  const sha = m[2] === "no-pkg-sha" ? null : (m[2] ?? null);
+  return { summary: m[1] ?? null, package_sha: sha, triaged: m[3] === "triaged" };
 }
 
 // Matches the subject we write in scanner/run.ts → maybeCommit:

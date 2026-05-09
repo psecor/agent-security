@@ -257,6 +257,70 @@ button.chip { cursor: pointer; }
   border-bottom: 2px solid var(--border);
 }
 
+/* Host detail — filter bar + pagination */
+.filter-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 16px;
+}
+.filter-bar .filter-group { gap: 8px; flex-wrap: wrap; }
+
+/* Pill: severity toggle buttons that double as count badges. Inactive state
+   keeps the severity color but at low opacity so the unfiltered overview is
+   still scannable; active state goes solid. Disabled when count is zero. */
+.pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  text-transform: lowercase;
+  opacity: 0.7;
+}
+.pill:hover:not(:disabled) { opacity: 1; }
+.pill:disabled { opacity: 0.35; cursor: not-allowed; }
+.pill-active { color: #fff; opacity: 1; border-color: transparent; }
+.pill-active.pill-critical { background: var(--sev-critical); }
+.pill-active.pill-high     { background: var(--sev-high); }
+.pill-active.pill-medium   { background: var(--sev-medium); }
+.pill-active.pill-low      { background: var(--sev-low); }
+.pill-active.pill-info     { background: var(--sev-info); }
+.pill-count {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 11px;
+}
+
+.cve-tag {
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.load-more { text-align: center; padding: 16px 0; }
+.btn-secondary {
+  padding: 6px 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 13px;
+  cursor: pointer;
+}
+.btn-secondary:hover:not(:disabled) { background: var(--bg-alt); }
+.btn-secondary:disabled { opacity: 0.5; cursor: not-allowed; }
+
 /* Login */
 .login {
   max-width: 420px;
