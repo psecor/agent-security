@@ -8,9 +8,11 @@ import { join } from "node:path";
 import type { HostContext, HostToolRunner } from "./host-types.js";
 import type { RawFinding } from "./types.js";
 
-// Per-host timeout. A full rootfs walk over 1k+ packages takes longer than
-// a per-project semgrep run.
-const PROCESS_TIMEOUT_MS = 10 * 60 * 1000; // 10 min
+// Per-host wall-clock timeout. A full rootfs walk over 1k+ packages takes
+// longer than a per-project semgrep run, and includes a possible vuln-DB
+// pull on cold hosts. Generously sized above trivy's own --timeout so we
+// always see trivy's clean error message rather than a kill from us.
+const PROCESS_TIMEOUT_MS = 25 * 60 * 1000; // 25 min
 
 interface TrivyVulnerability {
   VulnerabilityID: string;     // "CVE-2026-31431"
@@ -121,8 +123,30 @@ export class TrivyRunner implements HostToolRunner {
       "--format", "json",
       "--severity", "LOW,MEDIUM,HIGH,CRITICAL",
       "--quiet",
-      "--skip-db-update",   // DB refresh is run-daily.sh's job, not the runner's
-      "--vuln-type", "os",
+      // Let trivy manage the vuln-DB lifecycle. It caches the DB locally and
+      // only re-downloads when stale (~24h), so back-to-back runs don't pay
+      // a full pull, but a fresh install / a host that's been quiet for a
+      // week refreshes automatically. Pinning `--skip-db-update` errors out
+      // on first-run hosts ("--skip-db-update cannot be specified on the
+      // first run") and would require us to bootstrap the DB out-of-band.
+      //
+      // `--scanners vuln` drops the default secret scanner — host findings
+      // here are about OS-package CVEs, not in-tree secrets (Gitleaks owns
+      // that on the project side). Without this, trivy walks the entire
+      // rootfs reading file contents and routinely hits its own --timeout
+      // on a workstation-sized filesystem.
+      "--scanners", "vuln",
+      // `--pkg-types os` is the modern replacement for the deprecated
+      // `--vuln-type os` flag.
+      "--pkg-types", "os",
+      // Skip kernel pseudo-fs (where rootfs walks fail outright) and the
+      // apt mirror cache (which has tens of thousands of small files that
+      // contribute nothing to OS-package detection but dominate walk time).
+      "--skip-dirs", "/proc,/sys,/dev,/var/lib/apt/lists,/var/cache",
+      // Trivy's own internal scan timeout — distinct from PROCESS_TIMEOUT_MS
+      // above, which is our wall-clock cap. Default is 5m, which a fresh DB
+      // pull plus a slow rootfs walk can blow past on a workstation.
+      "--timeout", "20m",
       "--output", reportPath,
     ];
 
