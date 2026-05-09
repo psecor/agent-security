@@ -1,6 +1,8 @@
 # Tools spec — v1
 
-Defines the `ToolRunner` interface, the `RawFinding` shape that runners emit, and how a user adds their own tools to the scan pipeline. Two runners are bundled today — Semgrep (static analysis on the working tree) and Gitleaks (secret detection across full git history); both implement the same interface, so adding a third is the same shape.
+Defines the `ToolRunner` interface for **project** scans, the `RawFinding` shape that all runners emit (project- or host-side), and how a user adds their own tools to the scan pipeline. Two project runners are bundled today — Semgrep (static analysis on the working tree) and Gitleaks (secret detection across full git history); both implement the same interface, so adding a third is the same shape.
+
+Host scans use a parallel `HostToolRunner` interface defined in `host-scanning.md`. The bundled host runner is Trivy. Both interfaces produce the same `RawFinding[]` shape — only the input context differs (project working tree vs. host rootfs).
 
 The triage layer (Claude) is **not** a tool in this sense. Tools are deterministic detectors that produce `RawFinding[]`; the triage layer consumes them, dedups, ranks, writes rationale, and emits the final `Finding[]` defined in `findings-schema.md`.
 
