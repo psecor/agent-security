@@ -107,6 +107,10 @@ export async function scanHost(opts: HostRunOptions): Promise<HostRunReport> {
     const triageResult = await triageHost({
       raws: allRaw,
       hostName,
+      osPrettyName: info.os_release.pretty_name,
+      kernelVersion: info.kernel_version,
+      architecture: info.architecture,
+      packageCount: info.package_count,
       log,
       claudeClient: opts.claudeClient,
     });

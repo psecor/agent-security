@@ -12,9 +12,10 @@
 
 import { createHash } from "node:crypto";
 import type Anthropic from "@anthropic-ai/sdk";
+import type { CveGroup } from "./prompt.js";
 import type { RawFinding } from "./tools/types.js";
 import type { Finding, Severity } from "./types.js";
-import { triageWithClaude, type TriageUsage } from "./claude.js";
+import { triageHostWithClaude, triageWithClaude, type TriageUsage } from "./claude.js";
 import { SourceReader, normalizedLineContext } from "./source.js";
 
 export interface TriageInput {
@@ -35,11 +36,17 @@ export interface TriageResult {
 export interface HostTriageInput {
   raws: RawFinding[];
   hostName: string;
+  // Host metadata threaded through to the Claude prompt so it can ground
+  // severity in "what's actually exposed on this box" rather than a generic
+  // CVE band. Required even on the naive path so the input shape is stable.
+  osPrettyName: string;
+  kernelVersion: string;
+  architecture: string;
+  packageCount: number;
   log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
-  // When supplied, will be used in a future commit (task #43) to add a
-  // category-aware host triage prompt. v1 always falls back to naive host
-  // triage and ignores this — captured here so the orchestrator can plumb
-  // it through without a follow-up signature change.
+  // When supplied, Claude triages the critical+high subset; medium/low/info
+  // stay on the naive path (16k kernel-headers-* CVEs would cost ~$30/scan
+  // to triage and the user's default UI filter is critical+high anyway).
   claudeClient: Anthropic | null;
 }
 
@@ -82,6 +89,15 @@ function readTrivy(raw: unknown): TrivyVulnerabilityShape {
   return raw as TrivyVulnerabilityShape;
 }
 
+// Cheap category derivation from package name. Used in the naive path where
+// no LLM is involved; Claude's triage path overrides this with its own
+// verdict. The linux-* prefix covers the kernel-headers explosion that
+// dominates host findings on a Debian/Ubuntu workstation.
+function naiveHostCategory(pkgName: string): string {
+  if (pkgName.startsWith("linux-")) return "kernel-cve";
+  return "package-cve";
+}
+
 export function naiveHostTriage(raws: RawFinding[], hostName: string): Finding[] {
   return raws.map((r): Finding => {
     const tv = readTrivy(r.raw);
@@ -96,7 +112,7 @@ export function naiveHostTriage(raws: RawFinding[], hostName: string): Finding[]
     const finding: Finding = {
       id,
       severity: naiveMapHostSeverity(r.severity),
-      category: "package-cve",
+      category: naiveHostCategory(pkgName),
       title,
       source: r.source,
       rule_id: cve,
@@ -112,18 +128,155 @@ export function naiveHostTriage(raws: RawFinding[], hostName: string): Finding[]
   });
 }
 
+// Group raws by CVE id. Same CVE on different packages (the kernel-headers
+// pattern) becomes a single CveGroup carrying every affected package; the
+// resulting Claude verdict is then fanned back out across all the raws in
+// the group so the on-disk finding count and per-package detail are
+// preserved (one Finding per (cve, package, host)).
+interface RawCveGroup {
+  cve: string;
+  group: CveGroup;
+  raws: RawFinding[];
+}
+
+function groupRawsByCve(raws: RawFinding[]): RawCveGroup[] {
+  const map = new Map<string, RawCveGroup>();
+  for (const r of raws) {
+    const tv = readTrivy(r.raw);
+    const pkgName = tv.PkgName ?? "unknown";
+    const installed = tv.InstalledVersion ?? "?";
+    const fixed = tv.FixedVersion && tv.FixedVersion.length > 0 ? tv.FixedVersion : null;
+    const existing = map.get(r.rule_id);
+    if (existing) {
+      existing.raws.push(r);
+      existing.group.affected.push({
+        package: pkgName, installed_version: installed, fixed_version: fixed,
+      });
+      continue;
+    }
+    const advisoryTitle = (tv.Title ?? r.message).replace(/\s+/g, " ").trim() || null;
+    map.set(r.rule_id, {
+      cve: r.rule_id,
+      group: {
+        cve: r.rule_id,
+        tool_severity: r.severity,
+        primary_url: tv.PrimaryURL ?? null,
+        advisory_title: advisoryTitle,
+        affected: [{ package: pkgName, installed_version: installed, fixed_version: fixed }],
+      },
+      raws: [r],
+    });
+  }
+  return [...map.values()];
+}
+
+// Materialize one Claude verdict (covering one or more CVE groups) into
+// per-(cve, package) Findings. Each raw under each referenced group becomes
+// a Finding stamped with the shared severity/category/title/rationale.
+function materializeHostClaudeFindings(
+  triagedFindings: ClaudeFinding[],
+  cveGroups: RawCveGroup[],
+  hostName: string,
+  log: HostTriageInput["log"],
+): Finding[] {
+  const findings: Finding[] = [];
+  const seen = new Set<number>();
+  for (const t of triagedFindings) {
+    const valid = t.raw_indexes.filter(
+      (i) => Number.isInteger(i) && i >= 0 && i < cveGroups.length,
+    );
+    if (valid.length === 0) {
+      log("warn", `claude (host): dropped triaged finding with no valid raw_indexes: ${t.title}`);
+      continue;
+    }
+    for (const i of valid) seen.add(i);
+    const title = t.title.replace(/\s+/g, " ").trim();
+    const rationale = t.rationale.trim();
+    const category = t.category;
+    const severity = t.severity;
+    for (const groupIdx of valid) {
+      const group = cveGroups[groupIdx]!;
+      for (const raw of group.raws) {
+        const tv = readTrivy(raw.raw);
+        const pkgName = tv.PkgName ?? "unknown";
+        const installed = tv.InstalledVersion ?? "?";
+        const fixed = tv.FixedVersion && tv.FixedVersion.length > 0 ? tv.FixedVersion : null;
+        const id = deriveHostId(raw.rule_id, pkgName, hostName);
+        const f: Finding = {
+          id,
+          severity,
+          category,
+          title,
+          source: raw.source,
+          rule_id: raw.rule_id,
+          rationale,
+          cve: raw.rule_id,
+          package: pkgName,
+          installed_version: installed,
+          fixed_version: fixed,
+        };
+        if (raw.links && raw.links.length > 0) f.links = raw.links;
+        findings.push(f);
+      }
+    }
+  }
+  const dropped = cveGroups.length - seen.size;
+  if (dropped > 0) {
+    log("info", `claude (host): dropped ${dropped} CVE group(s) as inapplicable to this host`);
+  }
+  return findings;
+}
+
+// Tool-native severities Trivy hands us that we route through Claude.
+// Mediums and lows stay on the naive path — see HostTriageInput's
+// `claudeClient` comment for the cost rationale.
+const HOST_CLAUDE_SEVERITIES = new Set(["CRITICAL", "HIGH"]);
+
 export async function triageHost(input: HostTriageInput): Promise<TriageResult> {
   if (input.raws.length === 0) {
     return { findings: [], triaged: false, usage: null };
   }
-  // v1 host triage is always naive. Task #43 will add a category-aware
-  // Claude prompt that writes per-host rationale and dedup hints; until
-  // then, a triaged: false output with mechanical severity remap is enough
-  // to make the dashboard usable.
-  if (input.claudeClient) {
-    input.log("debug", "host triage: claudeClient provided but v1 only emits naive output; ignoring (see task #43)");
+  if (!input.claudeClient) {
+    return { findings: naiveHostTriage(input.raws, input.hostName), triaged: false, usage: null };
   }
-  return { findings: naiveHostTriage(input.raws, input.hostName), triaged: false, usage: null };
+
+  const escalated: RawFinding[] = [];
+  const naive: RawFinding[] = [];
+  for (const r of input.raws) {
+    if (HOST_CLAUDE_SEVERITIES.has(r.severity.toUpperCase())) escalated.push(r);
+    else naive.push(r);
+  }
+
+  const naiveFindings = naiveHostTriage(naive, input.hostName);
+  if (escalated.length === 0) {
+    input.log("info", "host triage: 0 critical/high raws; skipping Claude");
+    return { findings: naiveFindings, triaged: true, usage: null };
+  }
+
+  const cveGroups = groupRawsByCve(escalated);
+  input.log(
+    "info",
+    `host triage: ${escalated.length} critical/high raws across ${cveGroups.length} CVE(s); ${naive.length} medium/low/info on naive path`,
+  );
+
+  const { parsed, usage } = await triageHostWithClaude({
+    client: input.claudeClient,
+    hostName: input.hostName,
+    osPrettyName: input.osPrettyName,
+    kernelVersion: input.kernelVersion,
+    architecture: input.architecture,
+    packageCount: input.packageCount,
+    groups: cveGroups.map((g) => g.group),
+    log: input.log,
+  });
+
+  const claudeFindings = materializeHostClaudeFindings(
+    parsed.findings as ClaudeFinding[],
+    cveGroups,
+    input.hostName,
+    input.log,
+  );
+  return { findings: [...claudeFindings, ...naiveFindings], triaged: true, usage };
 }
 
 export async function triage(input: TriageInput): Promise<TriageResult> {

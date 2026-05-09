@@ -12,7 +12,15 @@ import Anthropic from "@anthropic-ai/sdk";
 import { betaZodOutputFormat } from "@anthropic-ai/sdk/helpers/beta/zod";
 import type { RawFinding } from "./tools/types.js";
 import { SourceReader } from "./source.js";
-import { SYSTEM_PROMPT, TriageOutputSchema, buildUserMessage, type TriageOutput } from "./prompt.js";
+import {
+  HOST_SYSTEM_PROMPT,
+  SYSTEM_PROMPT,
+  TriageOutputSchema,
+  buildHostUserMessage,
+  buildUserMessage,
+  type CveGroup,
+  type TriageOutput,
+} from "./prompt.js";
 
 export const TRIAGE_MODEL = "claude-opus-4-7";
 
@@ -95,6 +103,78 @@ export async function triageWithClaude(opts: ClaudeTriageOptions): Promise<Claud
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     throw new Error(`claude triage: failed to parse response (${msg}). stop_reason=${final.stop_reason}, text:\n${text}`);
+  }
+  return { parsed, usage };
+}
+
+export interface ClaudeHostTriageOptions {
+  client: Anthropic;
+  hostName: string;
+  osPrettyName: string;
+  kernelVersion: string;
+  architecture: string;
+  packageCount: number;
+  groups: CveGroup[];
+  log: (level: "debug" | "info" | "warn" | "error", msg: string) => void;
+  maxTokens?: number;
+}
+
+export async function triageHostWithClaude(
+  opts: ClaudeHostTriageOptions,
+): Promise<ClaudeTriageResult> {
+  const { client, log, groups } = opts;
+  const userText = buildHostUserMessage({
+    hostName: opts.hostName,
+    osPrettyName: opts.osPrettyName,
+    kernelVersion: opts.kernelVersion,
+    architecture: opts.architecture,
+    packageCount: opts.packageCount,
+    groups,
+  });
+
+  log("debug", `claude (host): model=${TRIAGE_MODEL}, cve_groups=${groups.length}, prompt_chars=${userText.length}`);
+
+  const outputFormat = betaZodOutputFormat(TriageOutputSchema);
+
+  const stream = client.beta.messages.stream({
+    model: TRIAGE_MODEL,
+    max_tokens: opts.maxTokens ?? 64000,
+    system: [
+      { type: "text", text: HOST_SYSTEM_PROMPT, cache_control: { type: "ephemeral" } },
+    ],
+    messages: [{ role: "user", content: userText }],
+    thinking: { type: "adaptive" } as unknown as Anthropic.Beta.BetaThinkingConfigParam,
+    output_config: {
+      effort: "high",
+      format: { type: outputFormat.type, schema: outputFormat.schema },
+    } as unknown as Anthropic.Beta.BetaOutputConfig,
+  });
+
+  const final = await stream.finalMessage();
+  const usage: TriageUsage = {
+    input_tokens: final.usage.input_tokens,
+    output_tokens: final.usage.output_tokens,
+    cache_read_input_tokens: final.usage.cache_read_input_tokens ?? 0,
+    cache_creation_input_tokens: final.usage.cache_creation_input_tokens ?? 0,
+  };
+  log("info",
+    `claude (host): in=${usage.input_tokens} (cache_read=${usage.cache_read_input_tokens}, ` +
+    `cache_create=${usage.cache_creation_input_tokens}) out=${usage.output_tokens}`,
+  );
+
+  const text = final.content
+    .filter((b): b is Anthropic.Beta.BetaTextBlock => b.type === "text")
+    .map((b) => b.text)
+    .join("");
+  if (text.length === 0) {
+    throw new Error(`claude host triage: empty text response. stop_reason=${final.stop_reason}`);
+  }
+  let parsed: TriageOutput;
+  try {
+    parsed = outputFormat.parse(text);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    throw new Error(`claude host triage: failed to parse response (${msg}). stop_reason=${final.stop_reason}, text:\n${text}`);
   }
   return { parsed, usage };
 }
