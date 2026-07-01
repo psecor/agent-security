@@ -15,6 +15,7 @@ import {
 } from "./git.js";
 import { GitleaksRunner } from "./tools/gitleaks.js";
 import { SemgrepRunner } from "./tools/semgrep.js";
+import { TrufflehogRunner } from "./tools/trufflehog.js";
 import type { ToolRunner, ToolRunRecord, RawFinding, ToolContext } from "./tools/types.js";
 import { triage } from "./triage.js";
 import {
@@ -66,7 +67,7 @@ export interface RunReport {
   error?: string;
 }
 
-const REGISTERED_TOOLS: ToolRunner[] = [new SemgrepRunner(), new GitleaksRunner()];
+const REGISTERED_TOOLS: ToolRunner[] = [new SemgrepRunner(), new GitleaksRunner(), new TrufflehogRunner()];
 
 export async function scanProject(opts: RunOptions): Promise<RunReport> {
   const { projectPath, projectKey, log } = opts;

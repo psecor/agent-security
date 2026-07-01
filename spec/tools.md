@@ -1,6 +1,6 @@
 # Tools spec — v1
 
-Defines the `ToolRunner` interface for **project** scans, the `RawFinding` shape that all runners emit (project- or host-side), and how a user adds their own tools to the scan pipeline. Two project runners are bundled today — Semgrep (static analysis on the working tree) and Gitleaks (secret detection across full git history); both implement the same interface, so adding a third is the same shape.
+Defines the `ToolRunner` interface for **project** scans, the `RawFinding` shape that all runners emit (project- or host-side), and how a user adds their own tools to the scan pipeline. Three project runners are bundled today — Semgrep (static analysis on the working tree), Gitleaks (pattern-based secret detection across full git history), and Trufflehog (broader detector set with live API verification, also across full git history); all implement the same interface, so adding a fourth is the same shape.
 
 Host scans use a parallel `HostToolRunner` interface defined in `host-scanning.md`. The bundled host runner is Trivy. Both interfaces produce the same `RawFinding[]` shape — only the input context differs (project working tree vs. host rootfs).
 
@@ -91,9 +91,9 @@ Reject only when the tool fundamentally cannot run: binary not found, OOM, JSON 
 
 ## Tool registry
 
-Today: hardcoded. `service/src/scanner/run.ts` exports `REGISTERED_TOOLS: ToolRunner[]`, currently `[new SemgrepRunner(), new GitleaksRunner()]`. Add a third by importing the runner module and appending the instance to that array.
+Today: hardcoded. `service/src/scanner/run.ts` exports `REGISTERED_TOOLS: ToolRunner[]`, currently `[new SemgrepRunner(), new GitleaksRunner(), new TrufflehogRunner()]`. Add a fourth by importing the runner module and appending the instance to that array.
 
-A YAML-driven registry (workspace `service/agent-security.config.yml` + per-project `.agent-security.yml` overrides, with a generic `command` adapter for shell-out tools) was sketched out as the v1 design but deferred. With two bundled tools and zero user-supplied additions, the indirection has no users to fit. When a third tool — especially a per-user one — shows up, the abstraction will have a real shape to take. Until then, hardcoding keeps the registration site greppable and the failure modes obvious.
+A YAML-driven registry (workspace `service/agent-security.config.yml` + per-project `.agent-security.yml` overrides, with a generic `command` adapter for shell-out tools) was sketched out as the v1 design but deferred. With three bundled tools and zero user-supplied additions, the indirection still has no users to fit. When a per-user tool shows up, the abstraction will have a real shape to take. Until then, hardcoding keeps the registration site greppable and the failure modes obvious.
 
 ---
 
@@ -139,6 +139,28 @@ Failure modes:
 - Other exit codes → reject with the captured stderr tail.
 
 `StartLine: 0` (gitleaks emits this for leaks inside commit messages rather than file bodies) is clamped to 1 so downstream source-slicing doesn't choke; the commit SHA is still preserved in `raw.Commit` for triage context.
+
+---
+
+## Bundled runner: Trufflehog
+
+`scanner/tools/trufflehog.ts` shells out to the `trufflehog` binary in the host's PATH and parses its NDJSON output (one JSON object per stdout line). Like Gitleaks, it walks the **full git history** — but its detector set is broader (hundreds of vendor-specific patterns, including LaunchDarkly without surrounding-context requirement and Snowflake credential triplets that Gitleaks misses), and detectors carry a `Verified` field set by pinging the vendor API during the scan. Overlap with Gitleaks on common detectors (AWS, GitHub PATs, Stripe, etc.) is expected; the triage layer dedupes near-duplicates.
+
+Defaults:
+
+- Command: `trufflehog git file://<projectPath> --json --no-update`.
+- Verification is on by default. Each finding's `Verified: true/false` indicates whether the detector successfully authenticated against the vendor's API. This is the killer feature — verified credentials are guaranteed live, not pattern false positives.
+- Severity mapping: `Verified: true` → `"HIGH"`, anything else (`false` or verification error) → `"MEDIUM"`. The triage layer can downgrade verified findings if context warrants and can downrank the unverified bucket aggressively.
+- Secret scrubbing: the runner strips `Raw` and `RawV2` from the stashed `raw` payload before it reaches `findings/projects/*.json`, since those fields contain the actual secret value. The masked `Redacted` field (when present) survives.
+- Timeout: 600s per project (verification adds API latency over the gitleaks/semgrep baseline).
+
+Failure modes:
+
+- `trufflehog` binary not in PATH → reject with an install hint pointing at `https://github.com/trufflesecurity/trufflehog/releases`.
+- Exit code 0 → success path, regardless of whether any leaks were found (trufflehog v3 only exits non-zero with `--fail`, which we don't pass).
+- Any non-zero exit code → reject with the captured stderr tail.
+
+NDJSON parse failures on individual lines are logged and skipped rather than aborting the whole run, since trufflehog occasionally emits stray non-JSON lines (e.g. when a detector itself crashes mid-scan).
 
 ---
 

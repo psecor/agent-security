@@ -27,6 +27,17 @@ npm install && npm run build) && sudo systemctl restart agent-security`.
 - Node 20+ on the box.
 - `semgrep` on `PATH` (`pipx install semgrep` is the easiest install) —
   for project scans.
+- `gitleaks` on `PATH` — for pattern-based secret detection across full
+  git history. Download a release binary from
+  https://github.com/gitleaks/gitleaks/releases and drop into
+  `~/.local/bin` or `/usr/local/bin`.
+- `trufflehog` on `PATH` — for broader detector coverage with live API
+  verification (LaunchDarkly, Snowflake, hundreds more) across full git
+  history. Download a release binary from
+  https://github.com/trufflesecurity/trufflehog/releases and drop into
+  `~/.local/bin` or `/usr/local/bin`. Missing-binary failure is graceful
+  — the scanner records it in `tools_failed[]` and continues with the
+  other runners.
 - `trivy` on `PATH` — for host scans. Aqua's apt repo is the simplest
   install on Debian/Ubuntu (instructions:
   https://aquasecurity.github.io/trivy/latest/getting-started/installation/).
